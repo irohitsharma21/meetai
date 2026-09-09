@@ -36,12 +36,19 @@ COPY .env.example .env.example
 RUN chown -R appuser:appuser /app
 USER appuser
 
-EXPOSE 8000
+EXPOSE 8010
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8010}/health || exit 1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--workers", "4", "--loop", "uvloop", "--http", "httptools", \
-     "--proxy-headers", "--forwarded-allow-ips", "*"]
+# Shell form so ${PORT} is expanded at runtime; Render and Cloud Run inject it
+# and will not route to a hard-coded port.
+#
+# One worker by default, not four. Each worker is a whole Python process with
+# its own embedding model and Qdrant client - about 280 MB measured - so four
+# of them do not fit a 512 MB instance and the container is killed on the first
+# request. Raise WEB_CONCURRENCY when the box is bigger.
+CMD uvicorn main:app --host 0.0.0.0 --port ${PORT:-8010} \
+    --workers ${WEB_CONCURRENCY:-1} --loop uvloop --http httptools \
+    --proxy-headers --forwarded-allow-ips "*"

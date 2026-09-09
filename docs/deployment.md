@@ -34,6 +34,14 @@ disk and keep SQLite.
 
 ## 2. Backend — Render
 
+`render.yaml` at the repository root declares this service, so the quickest
+route is **New → Blueprint** and point it at the repo: Render reads the file
+and creates the service with the right Docker context, health check and worker
+count already set. The keys marked `sync: false` are then filled in from the
+dashboard, so nothing secret is ever committed.
+
+The manual route, if you prefer it:
+
 1. **New → Web Service**, point it at the repository, root directory `meetai/backend`.
 2. Build command:
    ```
@@ -89,6 +97,25 @@ python -c "import secrets; print(secrets.token_hex(32))"
 > Free-tier Render spins down after 15 minutes idle; the next request takes
 > ~50 s to wake it. If someone is reviewing this from a link, either warm it
 > first or use the paid instance.
+
+---
+
+### What the free instance actually gives you
+
+512 MB of RAM, 0.1 CPU and 750 instance-hours a month, with no card required.
+The backend measures about 280 MB resident, so it fits — but only with a single
+worker. `WEB_CONCURRENCY` defaults to 1 for that reason: each worker is a whole
+Python process carrying its own embedding model and Qdrant client, and four of
+them (the previous default) are killed on the first request.
+
+Two consequences worth planning around rather than discovering:
+
+- **Free services sleep after 15 minutes idle** and take roughly a minute to
+  wake. Open the URL a few minutes before showing it to anyone.
+- **The filesystem is ephemeral.** It is wiped on every deploy and every wake.
+  SQLite would appear to work and then lose every meeting, which is why
+  `DATABASE_BACKEND` is set to `mongodb` above. The embedded Qdrant index lives
+  on the same disk, so semantic search re-indexes after a restart.
 
 ---
 
