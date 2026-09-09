@@ -1,0 +1,65 @@
+version: "3.9"
+
+services:
+  # ── MongoDB ──────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:7.0
+    container_name: meetai-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER:-admin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-changeme}
+      MONGO_INITDB_DATABASE: ai_meeting_platform
+    networks:
+      - meetai-net
+
+  # ── Backend API ───────────────────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      target: production
+    container_name: meetai-backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./backend/.env
+    depends_on:
+      - mongodb
+    networks:
+      - meetai-net
+    volumes:
+      - ./backend:/app:ro # Read-only mount for security
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ── Frontend (production build served by nginx) ───────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.frontend
+    container_name: meetai-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    depends_on:
+      - backend
+    networks:
+      - meetai-net
+
+volumes:
+  mongodb_data:
+    driver: local
+
+networks:
+  meetai-net:
+    driver: bridge
