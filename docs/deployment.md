@@ -42,7 +42,7 @@ dashboard, so nothing secret is ever committed.
 
 The manual route, if you prefer it:
 
-1. **New → Web Service**, point it at the repository, root directory `meetai/backend`.
+1. **New → Web Service**, point it at the repository, root directory `backend`.
 2. Build command:
    ```
    pip install -r requirements.txt
@@ -121,7 +121,7 @@ Two consequences worth planning around rather than discovering:
 
 ## 3. Frontend — Vercel
 
-1. **New Project** → import the repository, root directory `meetai/frontend`.
+1. **New Project** → import the repository, root directory `frontend`.
 2. Framework preset: **Vite**. Build `npm run build`, output `dist`.
 3. Environment:
 
