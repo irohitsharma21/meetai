@@ -3,6 +3,7 @@ import {
     Calendar, LayoutDashboard, LogOut, Sparkles, Video,
 } from 'lucide-react'
 import { useAuthStore } from '../../store'
+import { ThemeToggle } from './ThemeToggle'
 
 /**
  * Persistent left navigation rail.
@@ -55,6 +56,11 @@ export function Rail() {
             </Link>
 
             <div className="rail-footer">
+                <div className="rail-appearance">
+                    <span className="rail-appearance-label">Appearance</span>
+                    <ThemeToggle />
+                </div>
+
                 <button
                     className="user-chip"
                     onClick={() => {

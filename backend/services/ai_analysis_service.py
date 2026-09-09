@@ -109,6 +109,32 @@ Generate MoM in Markdown format with these exact sections:
 
 Be precise and professional. Use exact quotes for important statements."""
 
+ACTION_EXTRACTION_PROMPT = """You are reviewing a completed meeting transcript to
+extract every commitment that was actually made.
+
+A commitment is a task someone agreed to do, a decision with a follow-up, or a
+date that was fixed. Only include things that were genuinely agreed - do not
+invent follow-ups that sound plausible, and do not turn a question into a task.
+If nobody committed to anything, return an empty list; that is a valid answer.
+
+Transcript:
+{transcript}
+
+Return ONLY valid JSON in exactly this shape:
+{{
+  "actions": [
+    {{
+      "task": "what will be done, in the imperative",
+      "assignee": "the speaker who agreed to it, or null",
+      "deadline": "the deadline as it was said, e.g. 'Friday', or null",
+      "date": "an ISO date if one was stated explicitly, else null",
+      "confidence": 0.0
+    }}
+  ]
+}}
+"""
+
+
 SENTIMENT_PROMPT = """You are an expert in communication sentiment analysis.
 
 Analyze the emotional tone and sentiment of this meeting transcript.
@@ -289,6 +315,44 @@ class AIAnalysisService:
             return SentimentResult(overall=SentimentLabel.NEUTRAL, confidence=0.5)
 
     # ── 5. Full report orchestration ──────────────────────────────────────────
+    async def extract_actions(
+        self, transcript: List[TranscriptEntry]
+    ) -> List[NextAction]:
+        """
+        Pull every commitment out of a finished transcript in one pass.
+
+        Live detection runs per utterance while a meeting is happening, but it
+        only ever sees meetings that were transcribed through the WebSocket. A
+        transcript that arrived any other way - imported, seeded, or from a
+        session where detection was unavailable - would otherwise produce a
+        wrap-up with an empty actions list and no explanation, which reads as
+        the feature being broken rather than as nothing having been promised.
+        """
+        if not transcript:
+            return []
+
+        prompt = ACTION_EXTRACTION_PROMPT.format(
+            transcript=self._format_transcript(transcript)
+        )
+        raw = await self._chat(prompt, temperature=0.1)
+        data = self._extract_json(raw)
+
+        actions: List[NextAction] = []
+        for item in data.get("actions", []) or []:
+            task = (item.get("task") or "").strip()
+            if not task:
+                continue
+            actions.append(
+                NextAction(
+                    task=task,
+                    assignee=item.get("assignee") or None,
+                    date=item.get("date") or None,
+                    deadline=item.get("deadline") or None,
+                    confidence=float(item.get("confidence") or 0.8),
+                )
+            )
+        return actions
+
     async def generate_full_report(
         self,
         title: str,
@@ -311,6 +375,8 @@ class AIAnalysisService:
             tasks["mom"] = self.generate_mom(title, date, participants, transcript, duration_seconds)
         if "sentiment" in report_types:
             tasks["sentiment"] = self.analyze_sentiment(transcript)
+        if "actions" in report_types:
+            tasks["actions"] = self.extract_actions(transcript)
 
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
         result_map = dict(zip(tasks.keys(), results))
@@ -321,6 +387,17 @@ class AIAnalysisService:
             analysis.mom = result_map["mom"]
         if "sentiment" in result_map and not isinstance(result_map["sentiment"], Exception):
             analysis.sentiment = result_map["sentiment"]
+
+        if "actions" in result_map and not isinstance(result_map["actions"], Exception):
+            extracted = result_map["actions"] or []
+            # Live detection may already have stored some of these. Merge on the
+            # task text rather than replacing, so a commitment confirmed during
+            # the meeting keeps whatever state it was given.
+            seen = {a.task.strip().lower() for a in analysis.next_actions}
+            for action in extracted:
+                if action.task.strip().lower() not in seen:
+                    analysis.next_actions.append(action)
+                    seen.add(action.task.strip().lower())
 
         from datetime import datetime, timezone
         analysis.generated_at = datetime.now(timezone.utc)

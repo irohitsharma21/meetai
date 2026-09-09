@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import {
     Activity, BarChart2, CalendarClock, Check, Copy, FileText, KeyRound, Loader2,
-    Plus, Search, Trash2, Users, Video, X,
+    Plus, Search, Sparkles, Trash2, Users, Video, X,
 } from 'lucide-react'
 import { useAuthStore, useDashboardStore, useToastStore } from '../../store'
 import { meetingApi, errorMessage } from '../../lib/api'
+import { MeetingWrapUp } from '../../components/meeting/MeetingWrapUp'
 import type { MeetingListItem } from '../../types'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -212,6 +213,23 @@ export function DashboardPage() {
     const [query, setQuery] = useState('')
     const [filter, setFilter] = useState<Filter>('all')
     const [showCreate, setShowCreate] = useState(false)
+
+    // Set by the meeting room on the way out: ?wrapup=<id> opens the
+    // post-meeting panel over the dashboard.
+    const [searchParams, setSearchParams] = useSearchParams()
+    const wrapUpId = searchParams.get('wrapup')
+
+    // Opened by clicking a row rather than by leaving a meeting. Tracked
+    // separately so only the leave path writes the report unprompted.
+    const [insightsId, setInsightsId] = useState<string | null>(null)
+
+    const closeWrapUp = () => {
+        // Drop the parameter so a refresh, or a back navigation, does not
+        // reopen a panel the user has already dismissed.
+        searchParams.delete('wrapup')
+        setSearchParams(searchParams, { replace: true })
+        load()
+    }
 
     const load = async () => {
         try {
@@ -435,6 +453,13 @@ export function DashboardPage() {
                                         <td className="cell-dim">{relative(m.timestamp)}</td>
                                         <td onClick={(e) => e.stopPropagation()}>
                                             <div className="row-actions">
+                                                <button
+                                                    className="btn btn-sm btn-ghost"
+                                                    onClick={() => setInsightsId(m.meeting_id)}
+                                                    title="Summary, minutes, next actions and transcript"
+                                                >
+                                                    <Sparkles size={12} /> Insights
+                                                </button>
                                                 {(m.status === 'active' || m.status === 'scheduled') && (
                                                     <button className="btn btn-sm btn-primary" onClick={() => navigate(`/meetings/${m.meeting_id}`)}>
                                                         <Video size={12} /> {m.status === 'active' ? 'Join' : 'Start'}
@@ -461,6 +486,12 @@ export function DashboardPage() {
                     </div>
                 )}
             </div>
+
+            {wrapUpId && <MeetingWrapUp meetingId={wrapUpId} onClose={closeWrapUp} autoGenerate />}
+
+            {!wrapUpId && insightsId && (
+                <MeetingWrapUp meetingId={insightsId} onClose={() => { setInsightsId(null); load() }} />
+            )}
 
             {showCreate && (
                 <CreateMeetingModal onClose={() => setShowCreate(false)} onCreated={load} />

@@ -14,10 +14,17 @@ import { useMeetingRoomStore } from '../../store'
 
 interface VideoGridProps {
     meetingId: string
+    /** Host action: end the meeting for everyone. */
     onEnd: () => void
+    /**
+     * This participant has left the room - by pressing Leave, or because the
+     * connection dropped for good. Distinct from onEnd: leaving is a personal
+     * act, ending is done to the meeting.
+     */
+    onLeave?: () => void
 }
 
-function RoomControls({ onEnd }: VideoGridProps) {
+function RoomControls({ onEnd }: Pick<VideoGridProps, 'meetingId' | 'onEnd'>) {
     const { isMicrophoneEnabled, isCameraEnabled, localParticipant } = useLocalParticipant()
     const { toggleMic, toggleCamera } = useMeetingRoomStore()
     const [isSharing, setIsSharing] = useState(false)
@@ -84,7 +91,7 @@ function RoomControls({ onEnd }: VideoGridProps) {
     )
 }
 
-export function VideoGrid({ meetingId, onEnd }: VideoGridProps) {
+export function VideoGrid({ meetingId, onEnd, onLeave }: VideoGridProps) {
     const { livekitToken, livekitUrl } = useMeetingRoomStore()
 
     if (!livekitToken || !livekitUrl) {
@@ -104,6 +111,15 @@ export function VideoGrid({ meetingId, onEnd }: VideoGridProps) {
                 video={true}
                 audio={true}
                 style={{ flex: 1, overflow: 'hidden' }}
+                /*
+                 * The Leave button inside LiveKit's own control bar calls
+                 * room.disconnect() and nothing else - it has no idea this app
+                 * has routes. Without this the room tears down and the user is
+                 * left looking at an empty stage on a page they have already
+                 * left. This is the only hook that catches both that button and
+                 * a connection that has genuinely given up.
+                 */
+                onDisconnected={onLeave}
             >
                 <VideoConference />
                 <RoomAudioRenderer />

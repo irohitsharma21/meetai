@@ -7,9 +7,16 @@ const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
 export function useMeetingWebSocket(meetingId: string | null) {
     const wsRef = useRef<WebSocket | null>(null)
     const mounted = useRef(true)
+    // Held so leaving the room can cancel a pending reconnect. Without this the
+    // timer fires after unmount and opens a socket for a meeting nobody is in,
+    // which then closes, and schedules another - one zombie connection per
+    // visit to the room.
+    const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null)
     const { addTranscriptEntry, addPendingAction, setTranscriptionStatus } = useMeetingRoomStore()
 
     const connect = useCallback(() => {
+        // A reconnect scheduled just before unmount can still arrive here.
+        if (!mounted.current) return
         if (!meetingId) {
             console.log('[WS] No meetingId, skipping connection');
             return
@@ -83,7 +90,7 @@ export function useMeetingWebSocket(meetingId: string | null) {
                     return
                 }
                 // Reconnect after 3s
-                setTimeout(connect, 3000)
+                retryRef.current = setTimeout(connect, 3000)
             }
         }
     }, [meetingId, addTranscriptEntry, addPendingAction, setTranscriptionStatus])
@@ -93,6 +100,10 @@ export function useMeetingWebSocket(meetingId: string | null) {
         connect()
         return () => {
             mounted.current = false
+            if (retryRef.current) {
+                clearTimeout(retryRef.current)
+                retryRef.current = null
+            }
             wsRef.current?.close()
         }
     }, [connect])

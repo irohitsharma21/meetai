@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
 from core.security import get_current_user
+from core.timeutils import elapsed_seconds
 from db.mongodb import get_meetings_collection
 from models.meeting_model import TranscriptEntry
 
@@ -51,12 +52,8 @@ async def add_transcript_entry(
         elapsed_ms = 0
         if started:
             try:
-                if isinstance(started, str):
-                    started = datetime.fromisoformat(started)
-                if started.tzinfo is None:
-                    started = started.replace(tzinfo=timezone.utc)
-                delta = datetime.now(timezone.utc) - started
-                elapsed_ms = max(int(delta.total_seconds() * 1000), 0)
+                seconds = elapsed_seconds(started)
+                elapsed_ms = (seconds or 0) * 1000
             except (ValueError, TypeError):
                 elapsed_ms = 0
 

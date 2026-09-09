@@ -4,8 +4,16 @@ import { useMeetingRoomStore } from '../../store'
 import type { TranscriptEntry } from '../../types'
 
 // Speaker color palette (cycling)
+/*
+ * Speaker colours are CSS variables rather than literals so they can differ
+ * per theme. The pastels that read well on a dark panel are close to
+ * illegible on a white one - #facc15 in particular sits around 1.7:1 against
+ * a light surface - so index.css defines a darker set for light mode under
+ * the same names.
+ */
 const SPEAKER_COLORS = [
-    '#60a5fa', '#34d399', '#f472b6', '#fb923c', '#a78bfa', '#facc15', '#38bdf8'
+    'var(--speaker-1)', 'var(--speaker-2)', 'var(--speaker-3)',
+    'var(--speaker-4)', 'var(--speaker-5)', 'var(--speaker-6)',
 ]
 const speakerColorCache: Record<string, string> = {}
 let colorIdx = 0
@@ -82,8 +90,8 @@ export function TranscriptPanel({ meetingId, entries: externalEntries, compact }
                     <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>Live Transcript</span>
                     <span style={{
                         fontSize: '0.6875rem', fontWeight: 600,
-                        background: 'rgba(59,130,246,0.15)',
-                        color: '#93c5fd',
+                        background: 'var(--accent-soft)',
+                        color: 'var(--accent-text)',
                         padding: '0.1rem 0.5rem',
                         borderRadius: '999px',
                     }}>
@@ -101,9 +109,12 @@ export function TranscriptPanel({ meetingId, entries: externalEntries, compact }
                     {participants.map((p) => (
                         <span key={p} style={{
                             fontSize: '0.6875rem', fontWeight: 600,
-                            background: `${getSpeakerColor(p)}18`,
+                            // color-mix rather than appending hex alpha: these
+                            // are now custom properties, and "var(--speaker-1)18"
+                            // is not a colour.
+                            background: `color-mix(in srgb, ${getSpeakerColor(p)} 12%, transparent)`,
                             color: getSpeakerColor(p),
-                            border: `1px solid ${getSpeakerColor(p)}35`,
+                            border: `1px solid color-mix(in srgb, ${getSpeakerColor(p)} 32%, transparent)`,
                             padding: '0.15rem 0.5rem',
                             borderRadius: '999px',
                             display: 'flex', alignItems: 'center', gap: '0.25rem',

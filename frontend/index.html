@@ -5,8 +5,33 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="AI-Enhanced Meeting Platform – HD video meetings with real-time transcription, AI analysis, and automated Proof of Record." />
-    <meta name="theme-color" content="#0f172a" />
+    <meta name="theme-color" content="#08090a" />
     <title>MeetAI – Intelligent Meeting Platform</title>
+    <!--
+      Stamp the saved theme on <html> before the first paint. Without this the
+      document renders with the :root (light) palette for a frame and a dark-mode
+      user gets a white flash on every hard navigation.
+
+      Kept deliberately tiny and inline — an external file would be a render-
+      blocking round trip. The storage key and the "dark" default must match
+      src/components/common/ThemeToggle.tsx.
+    -->
+    <script>
+      (function () {
+        try {
+          var choice = localStorage.getItem('meetai.theme');
+          if (choice !== 'light' && choice !== 'dark' && choice !== 'system') choice = 'dark';
+          // "system" leaves the attribute off so prefers-color-scheme decides.
+          if (choice !== 'system') document.documentElement.setAttribute('data-theme', choice);
+          var dark = choice === 'dark'
+            || (choice === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute('content', dark ? '#08090a' : '#f1f4f9');
+        } catch (e) {
+          document.documentElement.setAttribute('data-theme', 'dark');
+        }
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />

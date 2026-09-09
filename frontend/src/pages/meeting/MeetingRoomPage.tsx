@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { Video, Bot, Zap, Sparkles, Users, Copy, Check, Link as LinkIcon } from 'lucide-react'
 import { VideoGrid } from '../../components/meeting/VideoGrid'
@@ -115,16 +115,56 @@ export function MeetingRoomPage() {
         }
     }, [meetingId])
 
+    /*
+     * Where this page hands off to, once. Leaving fires from two places at
+     * nearly the same moment - the click handler and LiveKit's onDisconnected -
+     * and the host ending a meeting fires both as well, on the way to the
+     * report. Without a latch the second one would overwrite the first
+     * destination, sending the host to the dashboard instead of the report.
+     */
+    const departedRef = useRef(false)
+
+    const handleLeave = useCallback(() => {
+        if (departedRef.current) return
+        departedRef.current = true
+
+        // Navigate first and synchronously. Leaving a call must never wait on a
+        // network round trip; the room is already gone from the user's point of
+        // view the instant they click. `replace` so the browser back button
+        // does not return them to a room they have left.
+        //
+        // The dashboard reads ?wrapup and opens the post-meeting panel over it,
+        // so the wrap-up is something you land behind rather than a detour: the
+        // destination is still the dashboard, and dismissing the panel leaves
+        // you exactly where you expected to be.
+        clearRoom()
+        navigate(`/dashboard?wrapup=${encodeURIComponent(meetingId ?? '')}`, { replace: true })
+    }, [clearRoom, navigate])
+
     const handleEndMeeting = async () => {
         if (!meetingId || isEnding) return
+
+        // Claim the exit before the await: disconnecting the room triggers
+        // onDisconnected, which would otherwise redirect to the dashboard while
+        // this is still waiting on the server.
+        if (departedRef.current) return
+        departedRef.current = true
+        setIsEnding(true)
+
         try {
-            setIsEnding(true)
             await meetingApi.end(meetingId)
             addToast({ type: 'success', title: 'Meeting ended', message: 'Generating AI report…' })
             clearRoom()
-            navigate(`/meetings/${meetingId}/report`)
+            navigate(`/meetings/${meetingId}/report`, { replace: true })
         } catch (err) {
-            addToast({ type: 'error', title: 'Failed to end meeting' })
+            addToast({
+                type: 'error',
+                title: 'Could not end the meeting',
+                message: errorMessage(err, 'You are still connected.'),
+            })
+            // The meeting is still live, so release the latch and let them try
+            // again rather than stranding them in a room they cannot leave.
+            departedRef.current = false
             setIsEnding(false)
         }
     }
@@ -223,6 +263,7 @@ export function MeetingRoomPage() {
                     <VideoGrid
                         meetingId={meetingId!}
                         onEnd={handleEndMeeting}
+                        onLeave={handleLeave}
                     />
                 </div>
 

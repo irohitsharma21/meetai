@@ -29,6 +29,7 @@ from fastapi import (
 )
 
 from core.security import get_current_user, require_host
+from core.timeutils import as_datetime, elapsed_seconds
 from db.mongodb import get_meetings_collection, get_users_collection
 from models.meeting_model import (
     ActionStatus,
@@ -315,10 +316,10 @@ async def end_meeting(
     remaining = await transcription_service.flush_all_buffers(meeting_id)
     transcription_service.end_session(meeting_id)
 
-    # Calculate duration
-    started = doc.get("started_at")
+    # Duration. started_at comes back from the database as an ISO string on the
+    # SQLite backend and as a datetime on Mongo; subtracting the former raises.
     ended = datetime.now(timezone.utc)
-    duration = int((ended - started).total_seconds()) if started else None
+    duration = elapsed_seconds(doc.get("started_at"), ended)
 
     col = get_meetings_collection()
     update: dict = {
@@ -360,9 +361,9 @@ async def generate_report(
         raise HTTPException(status_code=422, detail="No transcript data available")
 
     participants = [p["username"] for p in doc.get("participants", [])]
-    date_str = doc.get("timestamp", datetime.now(timezone.utc)).isoformat()
-    if hasattr(date_str, "isoformat"):
-        date_str = date_str.isoformat()
+    # Same coercion as above: calling .isoformat() straight off a stored value
+    # raises AttributeError once that value is a string.
+    date_str = (as_datetime(doc.get("timestamp")) or datetime.now(timezone.utc)).isoformat()
 
     existing = AIAnalysis(**doc.get("ai_analysis", {}))
 
