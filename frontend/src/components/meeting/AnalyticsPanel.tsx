@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { AlertTriangle, BarChart2, Loader2, MessageSquare, Scale, Tag } from 'lucide-react'
-import { insightApi } from '../../lib/api'
+import { insightApi, errorMessage } from '../../lib/api'
 
 interface SpeakerRow {
     speaker: string
@@ -51,7 +51,7 @@ export function AnalyticsPanel({ meetingId }: { meetingId: string }) {
             .then((r) => { if (!cancelled) setData(r.data) })
             .catch((e) => {
                 if (!cancelled) {
-                    setError(e?.response?.data?.detail ?? 'Could not load analytics')
+                    setError(errorMessage(e, 'Could not load analytics'))
                 }
             })
             .finally(() => { if (!cancelled) setLoading(false) })

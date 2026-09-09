@@ -29,17 +29,19 @@ from fastapi import (
 )
 
 from core.security import get_current_user, require_host
-from db.mongodb import get_meetings_collection
+from db.mongodb import get_meetings_collection, get_users_collection
 from models.meeting_model import (
     ActionStatus,
     CreateMeetingRequest,
     GenerateReportRequest,
+    JoinByCodeRequest,
     JoinMeetingResponse,
     Meeting,
     MeetingStatus,
     Participant,
     ParticipantRole,
     SearchQuery,
+    generate_join_code,
 )
 from services.ai_analysis_service import ai_analysis_service
 from services.livekit_service import livekit_service
@@ -69,14 +71,38 @@ async def create_meeting(
     payload: CreateMeetingRequest,
     current_user: dict = Depends(require_host),
 ):
-    print(f"🆕 Creating meeting: {payload.title}")
+    host = current_user["username"]
+
+    # Invitations are by username, so an unknown name would otherwise be stored
+    # as a participant who can never sign in - a roster entry for nobody. Say
+    # which names were not recognised instead of failing silently.
+    invited = [p.strip() for p in payload.participants if p and p.strip()]
+    invited = [p for p in dict.fromkeys(invited) if p != host]
+    if invited:
+        users = get_users_collection()
+        known = set()
+        async for u in users.find({"username": {"$in": invited}}):
+            known.add(u["username"])
+        unknown = [p for p in invited if p not in known]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No account for: {', '.join(unknown)}. "
+                    "Invite registered usernames, or share the meeting code instead."
+                ),
+            )
+
+    # The host is on the roster from the start; they created the meeting, and a
+    # participant list that omits its own organiser reads as a bug.
     meeting = Meeting(
         title=payload.title,
         description=payload.description,
-        created_by=current_user["username"],
-        participants=[
+        created_by=host,
+        participants=[Participant(username=host, role=ParticipantRole.HOST)]
+        + [
             Participant(username=p, role=ParticipantRole.PARTICIPANT)
-            for p in payload.participants
+            for p in invited
         ],
         status=MeetingStatus.SCHEDULED,
     )
@@ -90,7 +116,11 @@ async def create_meeting(
     except Exception as e:
         print(f"⚠️ LiveKit room pre-creation failed: {e}")
 
-    return {"meeting_id": meeting.meeting_id, "room_name": meeting.room_name}
+    return {
+        "meeting_id": meeting.meeting_id,
+        "room_name": meeting.room_name,
+        "join_code": meeting.join_code,
+    }
 
 
 # ── List / search meetings ────────────────────────────────────────────────────
@@ -127,6 +157,7 @@ async def list_meetings(
         meetings.append(
             {
                 "meeting_id": doc["meeting_id"],
+                "join_code": doc.get("join_code"),
                 "title": doc["title"],
                 "created_by": doc["created_by"],
                 "participants": [p["username"] for p in doc.get("participants", [])],
@@ -152,6 +183,44 @@ async def get_meeting(
 ):
     doc = await _get_meeting_or_404(meeting_id)
     return _serialize(doc)
+
+
+# ── Resolve a shareable code ──────────────────────────────────────────────────
+# Kept above the "/{meeting_id}/..." routes: FastAPI matches in registration
+# order, so a literal path must never sit behind a path parameter of the same
+# shape. No POST "/{meeting_id}" exists today, but adding one later would
+# otherwise silently capture this route.
+@router.post("/join-by-code")
+async def join_by_code(
+    payload: JoinByCodeRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Turn a shared code into a meeting id.
+
+    Anyone signed in who holds the code may enter - that is the point of a
+    code - so this deliberately does not check the invite list. A meeting that
+    has already ended is refused, because joining it would do nothing useful.
+    """
+    col = get_meetings_collection()
+    doc = await col.find_one({"join_code": payload.code})
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No meeting found with code {payload.code}. Check it and try again.",
+        )
+    if doc.get("status") == MeetingStatus.ENDED.value:
+        raise HTTPException(
+            status_code=410,
+            detail=f"'{doc['title']}' has already ended. Its report is on the meeting page.",
+        )
+    return {
+        "meeting_id": doc["meeting_id"],
+        "title": doc["title"],
+        "join_code": doc.get("join_code"),
+        "status": doc.get("status"),
+        "created_by": doc.get("created_by"),
+    }
 
 
 # ── Join meeting (get LiveKit token) ──────────────────────────────────────────
@@ -203,6 +272,7 @@ async def join_meeting(
         meeting_id=meeting_id,
         room_name=doc["room_name"],
         role=role,
+        join_code=doc.get("join_code"),
     )
 
 
@@ -441,7 +511,6 @@ async def meeting_websocket(
             return
 
         col = get_meetings_collection()
-        manager.connect(meeting_id, websocket, username)
 
         # Expect identify command first
         identify_raw = await websocket.receive_text()
@@ -460,8 +529,19 @@ async def meeting_websocket(
                 await websocket.close(code=4001)
                 return
 
-        print(f"🔌 WebSocket Connected: {username} in meeting {meeting_id}")
+        # Registered only after identify, so the roster carries the real
+        # username rather than the "anonymous" placeholder.
+        manager.connect(meeting_id, websocket, username)
+        print(f"WebSocket connected: {username} in meeting {meeting_id}")
         await websocket.send_json({"type": "connected", "username": username})
+
+        # Tell the client up front whether speech-to-text can actually run.
+        # Without this the transcript panel is empty for two indistinguishable
+        # reasons: nobody has spoken, or the provider is unreachable.
+        await websocket.send_json({
+            "type": "transcription_status",
+            **transcription_service.status,
+        })
 
         while True:
             message = await websocket.receive()
@@ -498,12 +578,6 @@ async def meeting_websocket(
                     )
 
                     # Broadcast transcript to all participants
-                    await manager.broadcast(
-                        meeting_id,
-                        {"type": "transcript", "entry": entry.dict()},
-                    )
-
-                    # Broadast transcript to all participants
                     await manager.broadcast(
                         meeting_id,
                         {"type": "transcript", "entry": entry.dict()},

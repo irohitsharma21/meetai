@@ -6,7 +6,7 @@ import {
     Clock, Users, Sparkles, Brain, Calendar,
     TrendingUp, TrendingDown, Minus, Download, RefreshCw, BarChart3, Mail
 } from 'lucide-react'
-import { insightApi, meetingApi, transcriptApi } from '../../lib/api'
+import { insightApi, meetingApi, transcriptApi, errorMessage } from '../../lib/api'
 import { useToastStore } from '../../store'
 import { TranscriptPanel } from '../../components/meeting/TranscriptPanel'
 import { AnalyticsPanel } from '../../components/meeting/AnalyticsPanel'
@@ -205,7 +205,7 @@ export function ReportPage() {
             addToast({
                 type: 'error',
                 title: 'Could not send digest',
-                message: err?.response?.data?.detail ?? 'Email is not configured',
+                message: errorMessage(err, 'Email is not configured'),
             })
         } finally {
             setIsSendingDigest(false)

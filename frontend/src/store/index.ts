@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
-import type { User, Meeting, MeetingListItem, TranscriptEntry, ActionDetectionResult } from '../types'
+import type { User, Meeting, MeetingListItem, TranscriptEntry, ActionDetectionResult, TranscriptionStatus } from '../types'
 
 // ── Auth Store ────────────────────────────────────────────────────────
 interface AuthState {
@@ -46,14 +46,19 @@ interface MeetingRoomState {
     livekitToken: string | null
     livekitUrl: string | null
     roomRole: string | null
+    joinCode: string | null
     transcript: TranscriptEntry[]
     pendingActions: ActionDetectionResult[]
     isConnected: boolean
     isRecording: boolean
     isMicMuted: boolean
     isCameraOff: boolean
+    // null until the server reports; drives the header badge and the empty
+    // state, so "no transcript" is never ambiguous.
+    transcriptionStatus: TranscriptionStatus | null
 
-    setMeeting: (meeting: Meeting, token: string, url: string, role: string) => void
+    setTranscriptionStatus: (s: TranscriptionStatus) => void
+    setMeeting: (meeting: Meeting, token: string, url: string, role: string, joinCode?: string | null) => void
     addTranscriptEntry: (entry: TranscriptEntry) => void
     addPendingAction: (action: ActionDetectionResult) => void
     dismissAction: (index: number) => void
@@ -69,15 +74,21 @@ export const useMeetingRoomStore = create<MeetingRoomState>((set) => ({
     livekitToken: null,
     livekitUrl: null,
     roomRole: null,
+    joinCode: null,
     transcript: [],
     pendingActions: [],
     isConnected: false,
     isRecording: false,
     isMicMuted: false,
     isCameraOff: false,
+    transcriptionStatus: null,
 
-    setMeeting: (meeting, token, url, role) =>
-        set({ currentMeeting: meeting, livekitToken: token, livekitUrl: url, roomRole: role }),
+    setTranscriptionStatus: (status) => set({ transcriptionStatus: status }),
+    setMeeting: (meeting, token, url, role, joinCode) =>
+        set({
+            currentMeeting: meeting, livekitToken: token, livekitUrl: url, roomRole: role,
+            joinCode: joinCode ?? meeting.join_code ?? null,
+        }),
 
     addTranscriptEntry: (entry) =>
         set((s) => ({ transcript: [...s.transcript, entry] })),
@@ -101,10 +112,12 @@ export const useMeetingRoomStore = create<MeetingRoomState>((set) => ({
             livekitToken: null,
             livekitUrl: null,
             roomRole: null,
+            joinCode: null,
             transcript: [],
             pendingActions: [],
             isConnected: false,
             isRecording: false,
+            transcriptionStatus: null,
         }),
 }))
 

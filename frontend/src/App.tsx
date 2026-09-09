@@ -4,6 +4,7 @@ import { Rail } from './components/common/Rail'
 import { ToastContainer } from './components/common/Toast'
 import { LoginPage, RegisterPage } from './pages/auth/AuthPages'
 import { DashboardPage } from './pages/dashboard/DashboardPage'
+import { JoinPage } from './pages/join/JoinPage'
 import { MeetingRoomPage } from './pages/meeting/MeetingRoomPage'
 import { ReportPage } from './pages/report/ReportPage'
 import { CalendarPage } from './pages/calendar/CalendarPage'
@@ -62,6 +63,17 @@ export default function App() {
                 <Route path="/dashboard" element={
                     <ProtectedRoute>
                         <Layout crumb="Overview"><DashboardPage /></Layout>
+                    </ProtectedRoute>
+                } />
+
+                <Route path="/join" element={
+                    <ProtectedRoute>
+                        <JoinPage />
+                    </ProtectedRoute>
+                } />
+                <Route path="/join/:code" element={
+                    <ProtectedRoute>
+                        <JoinPage />
                     </ProtectedRoute>
                 } />
 

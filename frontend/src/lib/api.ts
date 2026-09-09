@@ -46,6 +46,46 @@ api.interceptors.response.use(
 
 export default api
 
+/**
+ * Turn any API failure into a string safe to render.
+ *
+ * FastAPI returns 422 `detail` as an array of objects; passing that straight
+ * into a toast renders an object as a React child, which throws and unmounts
+ * the whole tree. So every error path funnels through here.
+ */
+export function errorMessage(err: any, fallback = 'Something went wrong. Please try again.'): string {
+    const detail = err?.response?.data?.detail
+
+    if (typeof detail === 'string' && detail.trim()) return detail
+
+    if (Array.isArray(detail)) {
+        const parts = detail
+            .map((d: any) => {
+                if (typeof d === 'string') return d
+                // loc is like ["body", "title"] - the last element names the field.
+                const field = Array.isArray(d?.loc) ? d.loc[d.loc.length - 1] : undefined
+                const msg = d?.msg ?? d?.message
+                if (!msg) return null
+                return field && field !== 'body' ? `${field}: ${msg}` : String(msg)
+            })
+            .filter(Boolean)
+        if (parts.length) return parts.join(' | ')
+    }
+
+    if (detail && typeof detail === 'object') {
+        const msg = (detail as any).msg ?? (detail as any).message
+        if (msg) return String(msg)
+    }
+
+    if (typeof err?.response?.data === 'string' && err.response.data.trim()) {
+        return err.response.data
+    }
+    if (err?.code === 'ECONNABORTED') return 'The server took too long to respond.'
+    if (err?.message === 'Network Error') return 'Cannot reach the server. Is the backend running?'
+
+    return err?.message || fallback
+}
+
 // ── Auth endpoints ────────────────────────────────────────────────────
 export const authApi = {
     login: (username: string, password: string) => {
@@ -67,6 +107,7 @@ export const meetingApi = {
     list: (params?: Record<string, unknown>) => api.get('/meetings/', { params }),
     get: (id: string) => api.get(`/meetings/${id}`),
     join: (id: string) => api.post(`/meetings/${id}/join`),
+    joinByCode: (code: string) => api.post('/meetings/join-by-code', { code }),
     start: (id: string) => api.post(`/meetings/${id}/start`),
     end: (id: string) => api.post(`/meetings/${id}/end`),
     generateReport: (id: string, report_types: string[]) =>

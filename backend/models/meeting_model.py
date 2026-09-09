@@ -6,8 +6,40 @@ All models use strict typing and validation.
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+import secrets
 import uuid
+
+
+# ── Join codes ────────────────────────────────────────────────────────────────
+# Ambiguous glyphs are excluded so a code read aloud or copied from a screen
+# survives the trip: no 0/O, no 1/I/L.
+_CODE_ALPHABET = "abcdefghjkmnpqrstuvwxyz23456789"
+
+
+def generate_join_code() -> str:
+    """A short, human-shareable meeting code, formatted `abc-defg-hij`."""
+    picks = [secrets.choice(_CODE_ALPHABET) for _ in range(10)]
+    body = "".join(picks)
+    return f"{body[:3]}-{body[3:7]}-{body[7:]}"
+
+
+def normalise_join_code(raw: str) -> str:
+    """
+    Accept what people actually paste.
+
+    Codes arrive with stray spaces, in upper case, without the hyphens, or as a
+    whole invite URL. All of those should resolve to the same meeting rather
+    than producing a 'not found' the user cannot explain.
+    """
+    text = (raw or "").strip()
+    if "/" in text:                       # a pasted invite link
+        text = text.rstrip("/").split("/")[-1]
+    text = text.split("?")[0]
+    cleaned = "".join(c for c in text.lower() if c in _CODE_ALPHABET)
+    if len(cleaned) != 10:
+        return ""
+    return f"{cleaned[:3]}-{cleaned[3:7]}-{cleaned[7:]}"
 
 
 # ── Enumerations ──────────────────────────────────────────────────────────────
@@ -94,6 +126,8 @@ class Meeting(BaseModel):
     title: str
     description: Optional[str] = None
     room_name: str = Field(default_factory=lambda: f"room-{uuid.uuid4().hex[:8]}")
+    # Shareable code so people can join without being invited by username.
+    join_code: str = Field(default_factory=generate_join_code)
     created_by: str  # username of host
     participants: List[Participant] = []
     status: MeetingStatus = MeetingStatus.SCHEDULED
@@ -124,6 +158,22 @@ class JoinMeetingResponse(BaseModel):
     meeting_id: str
     room_name: str
     role: str
+    join_code: Optional[str] = None
+
+
+class JoinByCodeRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=120)
+
+    @field_validator("code")
+    @classmethod
+    def _clean(cls, v: str) -> str:
+        code = normalise_join_code(v)
+        if not code:
+            raise ValueError(
+                "That does not look like a meeting code. Expected 10 characters, "
+                "for example abc-defg-hij."
+            )
+        return code
 
 
 class TranscriptChunk(BaseModel):
@@ -149,6 +199,7 @@ class GenerateReportRequest(BaseModel):
 
 class MeetingListItem(BaseModel):
     meeting_id: str
+    join_code: Optional[str] = None
     title: str
     created_by: str
     participants: List[str]

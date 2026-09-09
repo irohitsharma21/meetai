@@ -26,6 +26,7 @@ before anyone has left the call.
 | | |
 |---|---|
 | **Live video** | LiveKit WebRTC SFU, room + token management server-side |
+| **Join by code** | Every meeting gets a shareable code (`abc-defg-hij`) and invite link. Anyone signed in who holds the code can join, so participants do not have to be invited by username first |
 | **Live transcription** | Audio streamed over WebSocket in 1.5 s chunks → Groq Whisper Large v3 |
 | **Action detection** | Fast LLM pass over each new utterance; detects scheduling, commitments, deadlines and task assignments, with a confidence score |
 | **Minutes of Meeting** | Structured Markdown: agenda → discussion → decisions → action table → next steps |
@@ -132,6 +133,60 @@ The app boots and runs with no credentials at all. Without `GROQ_API_KEY`,
 meetings still work — video, rooms, participants, transcripts you type — and
 transcription and report generation return a clear "not configured" message
 naming the key to set. Without LiveKit, everything but joining a room works.
+
+Crucially, a degraded feature says so. The API probes the transcription
+provider once at startup, so `GET /health` reports the truth before anyone
+joins a meeting:
+
+```jsonc
+"transcription": {
+  "available": false,
+  "reason": "Groq rejected the API key (401). Speech-to-text is off until a
+             valid GROQ_API_KEY is set in backend/.env and the API restarts.",
+  "model": "whisper-large-v3", "provider": "groq"
+}
+```
+
+The same status is pushed over the meeting WebSocket on connect. The room
+header reads **Transcription off** rather than "Transcribing", and the
+transcript panel states the reason. An empty transcript panel otherwise has two
+indistinguishable causes — nobody has spoken, or speech-to-text cannot run at
+all — and only the server knows which.
+
+---
+
+## Multiple participants
+
+A meeting is addressable two ways: by its `meeting_id` (a UUID, used
+internally and in URLs) and by its **join code** — ten characters formatted
+`abc-defg-hij`, generated from an alphabet with no `0`/`O` and no `1`/`I`/`l`,
+so a code read aloud or copied off a screen survives the trip.
+
+Two ways in:
+
+1. **Invite by username** at creation. Names are checked against real accounts,
+   so a typo is reported rather than stored as a participant who can never sign
+   in. Invited people see the meeting on their dashboard.
+2. **Share the code or link.** Anyone signed in who holds it can join, which is
+   the point of a code — no invite needed. `POST /meetings/join-by-code`
+   resolves it.
+
+The server normalises what people actually paste, so all of these resolve to
+the same meeting:
+
+```
+abc-defg-hij      ABC-DEFG-HIJ      abcdefghij
+  abc-defg-hij    http://localhost:5173/join/abc-defg-hij
+```
+
+The host is on the roster from the moment they create the meeting; everyone
+else is added when they first join. The code appears in the meetings table
+(click to copy the invite link) and in the meeting header, with separate
+buttons for the bare code and the full link.
+
+An unknown code returns 404 with the code echoed back; a meeting that has
+already ended returns 410 pointing at its report, rather than dropping the
+person into a dead room.
 
 ---
 
@@ -269,6 +324,8 @@ Connect to `ws://localhost:8000/meetings/{meeting_id}/ws`.
 
 // server → client
 {"type": "connected", "username": "alice"}
+{"type": "transcription_status", "available": false,
+ "reason": "Groq rejected the API key (401). ...", "model": "whisper-large-v3"}
 {"type": "transcript", "entry": {"speaker": "alice", "text": "...", "time": "00:01:23"}}
 {"type": "action_detected", "result": {"trigger": true, "type": "schedule",
                                         "confidence": 0.92,
@@ -288,6 +345,7 @@ GET    /auth/me                           POST   /meetings/{id}/end
                                           POST   /meetings/{id}/generate-report
 POST   /meetings/                         POST   /meetings/{id}/actions/{aid}/confirm
 GET    /meetings/                         POST   /meetings/{id}/actions/{aid}/reject
+POST   /meetings/join-by-code
                                           WS     /meetings/{id}/ws
 
 GET    /transcripts/{id}                  GET    /calendar/connect

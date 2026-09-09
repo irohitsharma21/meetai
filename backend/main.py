@@ -13,10 +13,12 @@ Features:
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from core.config import settings
 from db.mongodb import lifespan
+from services.transcription_service import transcription_service
 from fastapi.exceptions import RequestValidationError
 from routers import (
     auth_routes, calendar_routes, insight_routes,
@@ -53,11 +55,22 @@ A production-ready AI meeting system with:
 
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request, exc):
-    print(f"❌ Validation Error: {exc.errors()}")
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": exc.body},
-    )
+    """
+    Return a 422 that is always JSON-serialisable.
+
+    Two traps here. `exc.body` is the raw request body, which is a starlette
+    FormData object for form endpoints (json.dumps raises TypeError on it, so
+    the handler itself 500s) and, for /auth/register, contains the submitted
+    password - which has no business being echoed back or printed. So the body
+    is dropped entirely. `exc.errors()` can also carry non-serialisable values
+    under `ctx`, hence jsonable_encoder rather than the raw list.
+    """
+    print(f"Validation error on {request.method} {request.url.path}: {exc.errors()}")
+    try:
+        detail = jsonable_encoder(exc.errors())
+    except Exception:
+        detail = [{"msg": str(exc), "loc": [], "type": "validation_error"}]
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 # ── Middleware ─────────────────────────────────────────────────────────────────
 # CORS – allow frontend origins
@@ -89,6 +102,10 @@ async def health_check():
             "app": settings.APP_NAME,
             "version": settings.APP_VERSION,
             "environment": settings.ENVIRONMENT,
+            # Surfaced so a dead transcription provider is visible without
+            # having to join a meeting and wait for a transcript that never
+            # arrives.
+            "transcription": transcription_service.status,
         }
     )
 

@@ -89,9 +89,21 @@ def _get_path(doc: Any, path: str) -> list[Any]:
 
 
 def _match_value(values: list[Any], expected: Any) -> bool:
+    """
+    Compare the values reachable by a path against a filter fragment.
+
+    `values` is empty when the field is absent. Mongo treats absent and
+    explicitly-null alike for equality - {"x": None} matches a document with no
+    "x" at all - so that case is handled before anything else; without it a
+    backfill query for unset fields silently matches nothing.
+    """
     if isinstance(expected, dict):
         for op, operand in expected.items():
             if op == "$ne":
+                # Mirror of the rule above: {"x": {"$ne": None}} must not match
+                # a document that lacks "x".
+                if operand is None and not values:
+                    return False
                 if any(v == operand for v in values):
                     return False
             elif op == "$in":
@@ -122,6 +134,9 @@ def _match_value(values: list[Any], expected: Any) -> bool:
             else:
                 raise NotImplementedError(f"unsupported query operator: {op}")
         return True
+
+    if expected is None:
+        return not values or any(v is None for v in values)
 
     # Scalar equality; a list field matches if any element equals the operand.
     return any(v == expected for v in values)

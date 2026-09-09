@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Loader2, Mic, Send, Sparkles, Volume2, X } from 'lucide-react'
-import { insightApi } from '../../lib/api'
+import { insightApi, errorMessage } from '../../lib/api'
 import { useToastStore } from '../../store'
 
 interface Reply {
@@ -93,7 +93,7 @@ export function AssistantDock({
             addToast({
                 type: 'error',
                 title: 'Assistant unavailable',
-                message: err?.response?.data?.detail ?? 'Could not reach the assistant',
+                message: errorMessage(err, 'Could not reach the assistant'),
             })
         } finally {
             setThinking(false)
@@ -133,7 +133,7 @@ export function AssistantDock({
                     addToast({
                         type: 'error',
                         title: 'Assistant unavailable',
-                        message: err?.response?.data?.detail ?? 'Speech-to-text failed',
+                        message: errorMessage(err, 'Speech-to-text failed'),
                     })
                 } finally {
                     setThinking(false)

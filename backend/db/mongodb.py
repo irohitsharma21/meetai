@@ -134,6 +134,7 @@ async def _ensure_indexes() -> None:
             IndexModel([("timestamp", ASCENDING)], name="idx_timestamp"),
             IndexModel([("status", ASCENDING)], name="idx_status"),
             IndexModel([("created_by", ASCENDING)], name="idx_created_by"),
+            IndexModel([("join_code", ASCENDING)], unique=True, name="idx_join_code"),
         ])
 
         # Mongo text index; skipped by the SQLite store, which serves $text
@@ -164,6 +165,38 @@ async def _ensure_indexes() -> None:
         print(f"[db] index creation warning: {exc}")
 
 
+async def _backfill_join_codes() -> None:
+    """
+    Give meetings created before join codes existed a code of their own.
+
+    Without this they can never be shared, and the unique index would also
+    reject a second document whose join_code is missing. Runs once per start
+    and is a no-op after that.
+    """
+    from models.meeting_model import generate_join_code
+
+    try:
+        col = database.db["meetings"]
+        cursor = col.find({"$or": [{"join_code": None}, {"join_code": ""}]})
+        patched = 0
+        async for doc in cursor:
+            # Retry on the vanishingly unlikely collision rather than failing
+            # the whole startup.
+            for _ in range(5):
+                code = generate_join_code()
+                if await col.find_one({"join_code": code}):
+                    continue
+                await col.update_one(
+                    {"meeting_id": doc["meeting_id"]}, {"$set": {"join_code": code}}
+                )
+                patched += 1
+                break
+        if patched:
+            print(f"[db] assigned join codes to {patched} existing meeting(s)")
+    except Exception as exc:
+        print(f"[db] join-code backfill warning: {exc}")
+
+
 # ── accessors ─────────────────────────────────────────────────────────
 def get_db():
     return database.db
@@ -189,5 +222,13 @@ def backend_info() -> dict:
 @asynccontextmanager
 async def lifespan(app) -> AsyncGenerator:
     await connect_db()
+
+    # Imported here rather than at module scope: db and services would
+    # otherwise import each other in a cycle.
+    from services.transcription_service import transcription_service
+    await transcription_service.verify_credentials()
+
+    await _backfill_join_codes()
+
     yield
     await close_db()

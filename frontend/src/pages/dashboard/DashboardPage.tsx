@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-    Activity, BarChart2, CalendarClock, FileText, Loader2, Plus, Search,
-    Trash2, Users, Video, X,
+    Activity, BarChart2, CalendarClock, Check, Copy, FileText, KeyRound, Loader2,
+    Plus, Search, Trash2, Users, Video, X,
 } from 'lucide-react'
 import { useAuthStore, useDashboardStore, useToastStore } from '../../store'
-import { meetingApi } from '../../lib/api'
+import { meetingApi, errorMessage } from '../../lib/api'
 import type { MeetingListItem } from '../../types'
 import { formatDistanceToNow } from 'date-fns'
 
@@ -58,6 +58,39 @@ function People({ names }: { names: string[] }) {
     )
 }
 
+/* ── invite code ──────────────────────────────────────────────────────── */
+
+/**
+ * Copy a meeting's join code straight from the list.
+ *
+ * Sharing is the whole point of a code, and making the host open the meeting
+ * first to find it is a pointless step.
+ */
+function CodeCell({ code }: { code?: string }) {
+    const [copied, setCopied] = useState(false)
+    const { addToast } = useToastStore()
+
+    if (!code) return <span className="cell-dim">-</span>
+
+    const handle = async (e: React.MouseEvent) => {
+        e.stopPropagation()
+        try {
+            await navigator.clipboard.writeText(`${window.location.origin}/join/${code}`)
+            setCopied(true)
+            setTimeout(() => setCopied(false), 1600)
+        } catch {
+            addToast({ type: 'info', title: 'Invite link', message: `${window.location.origin}/join/${code}` })
+        }
+    }
+
+    return (
+        <button className="code-chip" onClick={handle} title="Copy invite link">
+            {code}
+            <span aria-hidden>{copied ? <Check size={12} /> : <Copy size={12} />}</span>
+        </button>
+    )
+}
+
 /* ── create modal ─────────────────────────────────────────────────────── */
 
 function CreateMeetingModal({ onClose, onCreated }: { onClose: () => void; onCreated: () => void }) {
@@ -68,17 +101,28 @@ function CreateMeetingModal({ onClose, onCreated }: { onClose: () => void; onCre
     const { addToast } = useToastStore()
     const navigate = useNavigate()
 
+    // Mirrors MeetingCreate.title in models/meeting_model.py (min_length=3).
+    // Enforced here too so a too-short title is caught before the round trip.
+    const trimmed = title.trim()
+    const titleValid = trimmed.length >= 3
+
     const handleCreate = async (e: React.FormEvent) => {
         e.preventDefault()
-        if (!title.trim()) return
+        if (!titleValid) return
         try {
             setIsLoading(true)
             const res = await meetingApi.create({
-                title,
+                title: trimmed,
                 description,
                 participants: participants.split(',').map((p) => p.trim()).filter(Boolean),
             })
-            addToast({ type: 'success', title: 'Meeting created', message: 'Joining now…' })
+            addToast({
+                type: 'success',
+                title: 'Meeting created',
+                message: res.data.join_code
+                    ? `Share code ${res.data.join_code} to invite others.`
+                    : 'Joining now…',
+            })
             onCreated()
             onClose()
             navigate(`/meetings/${res.data.meeting_id}`)
@@ -86,7 +130,7 @@ function CreateMeetingModal({ onClose, onCreated }: { onClose: () => void; onCre
             addToast({
                 type: 'error',
                 title: 'Could not create meeting',
-                message: err?.response?.data?.detail,
+                message: errorMessage(err, 'Could not create the meeting'),
             })
         } finally {
             setIsLoading(false)
@@ -113,9 +157,15 @@ function CreateMeetingModal({ onClose, onCreated }: { onClose: () => void; onCre
                         <label className="label" htmlFor="m-title">Title</label>
                         <input
                             id="m-title" className="input" autoFocus required
+                            minLength={3} maxLength={200}
                             placeholder="Q4 roadmap review"
                             value={title} onChange={(e) => setTitle(e.target.value)}
                         />
+                        {title.length > 0 && !titleValid && (
+                            <span style={{ fontSize: '0.6875rem', color: 'var(--color-warning)' }}>
+                                At least 3 characters.
+                            </span>
+                        )}
                     </div>
                     <div className="form-group">
                         <label className="label" htmlFor="m-desc">Agenda <span style={{ color: 'var(--text-muted)' }}>optional</span></label>
@@ -138,7 +188,7 @@ function CreateMeetingModal({ onClose, onCreated }: { onClose: () => void; onCre
                     </div>
                     <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1.125rem' }}>
                         <button type="button" className="btn btn-secondary" onClick={onClose}>Cancel</button>
-                        <button type="submit" className="btn btn-primary" disabled={isLoading || !title.trim()}>
+                        <button type="submit" className="btn btn-primary" disabled={isLoading || !titleValid}>
                             {isLoading ? <Loader2 size={14} className="spin" /> : <Plus size={14} />}
                             Create &amp; join
                         </button>
@@ -250,11 +300,18 @@ export function DashboardPage() {
                             : 'Everything your meetings decided, in one place.'}
                     </div>
                 </div>
-                {canCreate && (
-                    <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
-                        <Plus size={14} /> New meeting
+                <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    {/* Available to everyone: a participant with a code needs
+                        this even though they cannot create meetings. */}
+                    <button className="btn btn-secondary" onClick={() => navigate('/join')}>
+                        <KeyRound size={14} /> Join with code
                     </button>
-                )}
+                    {canCreate && (
+                        <button className="btn btn-primary" onClick={() => setShowCreate(true)}>
+                            <Plus size={14} /> New meeting
+                        </button>
+                    )}
+                </div>
             </div>
 
             {/* KPI strip — one instrument, hairline-divided */}
@@ -350,6 +407,7 @@ export function DashboardPage() {
                                     <th style={{ width: '38%' }}>Meeting</th>
                                     <th>Status</th>
                                     <th>Participants</th>
+                                    <th>Code</th>
                                     <th>Duration</th>
                                     <th>Created</th>
                                     <th style={{ width: 1 }} aria-label="Actions" />
@@ -372,6 +430,7 @@ export function DashboardPage() {
                                             </span>
                                         </td>
                                         <td><People names={m.participants} /></td>
+                                        <td onClick={(e) => e.stopPropagation()}><CodeCell code={m.join_code} /></td>
                                         <td className="cell-dim">{duration(m.duration_seconds)}</td>
                                         <td className="cell-dim">{relative(m.timestamp)}</td>
                                         <td onClick={(e) => e.stopPropagation()}>

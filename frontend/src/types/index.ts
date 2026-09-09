@@ -55,6 +55,7 @@ export interface Participant {
 
 export interface Meeting {
     meeting_id: string
+    join_code?: string
     title: string
     description?: string
     room_name: string
@@ -72,6 +73,7 @@ export interface Meeting {
 
 export interface MeetingListItem {
     meeting_id: string
+    join_code?: string
     title: string
     created_by: string
     participants: string[]
@@ -89,6 +91,15 @@ export interface JoinMeetingResponse {
     meeting_id: string
     room_name: string
     role: string
+    join_code?: string
+}
+
+export interface JoinByCodeResponse {
+    meeting_id: string
+    title: string
+    join_code: string
+    status: MeetingStatus
+    created_by: string
 }
 
 export interface ActionDetectionResult {
@@ -116,8 +127,16 @@ export interface AuthTokens {
 }
 
 // WebSocket message types
+export interface TranscriptionStatus {
+    available: boolean
+    reason: string | null
+    model?: string
+    provider?: string
+}
+
 export type WSMessage =
     | { type: 'connected'; username: string }
+    | { type: 'transcription_status'; available: boolean; reason: string | null; model?: string; provider?: string }
     | { type: 'transcript'; entry: TranscriptEntry }
     | { type: 'action_detected'; result: ActionDetectionResult }
     | { type: 'error'; message: string }

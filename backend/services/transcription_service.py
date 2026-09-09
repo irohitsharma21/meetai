@@ -105,6 +105,51 @@ class TranscriptionService:
         self._buffers: Dict[str, Dict[str, TranscriptionBuffer]] = defaultdict(dict)
         self._meeting_start_times: Dict[str, float] = {}
 
+        # Why transcription is unavailable, or None when it is fine. A silent
+        # empty transcript panel is indistinguishable from "nobody has spoken
+        # yet", so the reason is carried all the way to the UI.
+        self._disabled_reason: Optional[str] = (
+            None
+            if self._client is not None
+            else "GROQ_API_KEY is not set, so speech-to-text is off. "
+                 "Add a key to backend/.env and restart the API."
+        )
+        self._consecutive_failures = 0
+
+    @property
+    def status(self) -> Dict[str, object]:
+        """Machine-readable state for the health endpoint and the WebSocket."""
+        return {
+            "available": self._disabled_reason is None,
+            "reason": self._disabled_reason,
+            "model": self._model,
+            "provider": "groq",
+        }
+
+    async def verify_credentials(self) -> None:
+        """
+        Probe the provider once at startup.
+
+        Without this the service reports "available" until the first person
+        speaks, which is the worst moment to discover the key is dead. Listing
+        models is cheap and needs no audio, so the health endpoint can be
+        truthful from boot. A network failure here is not treated as fatal - the
+        key may well be fine and the first real request will settle it.
+        """
+        if self._client is None:
+            return
+        try:
+            await self._client.models.list()
+            self._disabled_reason = None
+            print(f"Transcription ready: groq/{self._model}")
+        except Exception as e:
+            name = type(e).__name__
+            if name == "AuthenticationError" or getattr(e, "status_code", None) == 401:
+                self._note_failure(e)
+                print(f"Transcription disabled: {self._disabled_reason}")
+            else:
+                print(f"Could not verify Groq credentials ({name}); continuing.")
+
     # ── Session management ────────────────────────────────────────────────────
     def start_session(self, meeting_id: str) -> None:
         self._meeting_start_times[meeting_id] = time.time()
@@ -140,6 +185,12 @@ class TranscriptionService:
         Add audio chunk to speaker buffer.
         Returns a TranscriptEntry when buffer is flushed and transcribed.
         """
+        # Once the provider has told us the credentials are bad, stop buffering
+        # and stop calling it: retrying on every 1.5s chunk just burns CPU and
+        # fills the log with identical 401s.
+        if self._disabled_reason is not None:
+            return None
+
         buf = self._get_or_create_buffer(meeting_id, speaker_id)
         buf.add_chunk(audio_data)
 
@@ -181,6 +232,7 @@ class TranscriptionService:
                 temperature=0.0,
             )
 
+            self._consecutive_failures = 0
             text = response.text.strip()
             print(f"📝 Transcribed for {speaker_id}: [{text}]")
             if not text or text in ["[BLANK_AUDIO]", "Thank you.", "Thanks for watching!"]:
@@ -199,10 +251,40 @@ class TranscriptionService:
             return entry
 
         except Exception as e:
-            import traceback
-            traceback.print_exc()
-            print(f"⚠️ Transcription error for {speaker_id}: {e}")
+            self._note_failure(e)
+            print(f"Transcription error for {speaker_id}: {type(e).__name__}: {e}")
             return None
+
+    def _note_failure(self, exc: Exception) -> None:
+        """
+        Decide whether a failure is fatal or transient.
+
+        A bad key never fixes itself, so it disables the service outright and
+        reports why. Network blips are transient and only disable transcription
+        after they stop looking like blips.
+        """
+        name = type(exc).__name__
+        status_code = getattr(exc, "status_code", None)
+
+        if name == "AuthenticationError" or status_code == 401:
+            self._disabled_reason = (
+                "Groq rejected the API key (401). Speech-to-text is off until a "
+                "valid GROQ_API_KEY is set in backend/.env and the API restarts."
+            )
+            return
+        if status_code == 429:
+            self._disabled_reason = (
+                "Groq rate limit reached (429). Transcription will stay off until "
+                "the API is restarted or the quota resets."
+            )
+            return
+
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= 5:
+            self._disabled_reason = (
+                f"Speech-to-text failed {self._consecutive_failures} times in a row "
+                f"({name}). Check the backend log and the network connection."
+            )
 
     async def flush_all_buffers(self, meeting_id: str) -> List[TranscriptEntry]:
         """Force-flush all remaining buffers at meeting end."""

@@ -7,7 +7,7 @@ const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
 export function useMeetingWebSocket(meetingId: string | null) {
     const wsRef = useRef<WebSocket | null>(null)
     const mounted = useRef(true)
-    const { addTranscriptEntry, addPendingAction } = useMeetingRoomStore()
+    const { addTranscriptEntry, addPendingAction, setTranscriptionStatus } = useMeetingRoomStore()
 
     const connect = useCallback(() => {
         if (!meetingId) {
@@ -42,6 +42,14 @@ export function useMeetingWebSocket(meetingId: string | null) {
                 switch (msg.type) {
                     case 'transcript':
                         addTranscriptEntry(msg.entry)
+                        break
+                    case 'transcription_status':
+                        setTranscriptionStatus({
+                            available: msg.available,
+                            reason: msg.reason,
+                            model: msg.model,
+                            provider: msg.provider,
+                        })
                         break
                     case 'action_detected':
                         if (msg.result.trigger) {
@@ -78,7 +86,7 @@ export function useMeetingWebSocket(meetingId: string | null) {
                 setTimeout(connect, 3000)
             }
         }
-    }, [meetingId, addTranscriptEntry, addPendingAction])
+    }, [meetingId, addTranscriptEntry, addPendingAction, setTranscriptionStatus])
 
     useEffect(() => {
         mounted.current = true

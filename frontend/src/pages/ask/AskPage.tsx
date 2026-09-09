@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import {
     AlertTriangle, ArrowRight, Database, Loader2, RefreshCw, Search, Sparkles,
 } from 'lucide-react'
-import { insightApi } from '../../lib/api'
+import { insightApi, errorMessage } from '../../lib/api'
 import { useToastStore } from '../../store'
 
 interface Passage {
@@ -72,7 +72,7 @@ export function AskPage() {
             addToast({
                 type: 'error',
                 title: 'Search failed',
-                message: err?.response?.data?.detail ?? 'Could not reach the search service',
+                message: errorMessage(err, 'Could not reach the search service'),
             })
         } finally {
             setLoading(false)
@@ -93,7 +93,7 @@ export function AskPage() {
             addToast({
                 type: 'error',
                 title: 'Reindex failed',
-                message: err?.response?.data?.detail ?? 'Admin access is required',
+                message: errorMessage(err, 'Admin access is required'),
             })
         } finally {
             setIndexing(false)

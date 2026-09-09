@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { MessageSquare, Download, Users } from 'lucide-react'
+import { MessageSquare, Download, Users, AlertTriangle } from 'lucide-react'
 import { useMeetingRoomStore } from '../../store'
 import type { TranscriptEntry } from '../../types'
 
@@ -38,7 +38,7 @@ interface TranscriptPanelProps {
 }
 
 export function TranscriptPanel({ meetingId, entries: externalEntries, compact }: TranscriptPanelProps) {
-    const { transcript: storeTranscript } = useMeetingRoomStore()
+    const { transcript: storeTranscript, transcriptionStatus } = useMeetingRoomStore()
     const bottomRef = useRef<HTMLDivElement>(null)
 
     const entries = externalEntries || storeTranscript
@@ -62,6 +62,10 @@ export function TranscriptPanel({ meetingId, entries: externalEntries, compact }
 
     // Unique participants
     const participants = [...new Set(entries.map((e) => e.speaker))]
+
+    // Only meaningful in a live room; a saved transcript passed in via props
+    // has no live status attached.
+    const sttBlocked = !externalEntries && transcriptionStatus?.available === false
 
     return (
         <div className="sidebar" style={compact ? { width: '100%', borderLeft: 'none', borderTop: '1px solid var(--color-border)' } : {}}>
@@ -113,12 +117,33 @@ export function TranscriptPanel({ meetingId, entries: externalEntries, compact }
             {/* Transcript entries */}
             <div style={{ flex: 1, overflowY: 'auto' }}>
                 {entries.length === 0 ? (
-                    <div className="empty-state">
-                        <MessageSquare size={32} style={{ opacity: 0.3 }} />
-                        <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-                            Transcript will appear here as participants speak
-                        </p>
-                    </div>
+                    /*
+                     * An empty panel has two very different causes: nobody has
+                     * spoken yet, or speech-to-text cannot run at all. Only the
+                     * server knows which, so it says, and the difference is shown
+                     * here rather than left for the user to guess.
+                     */
+                    sttBlocked ? (
+                        <div className="empty-state">
+                            <AlertTriangle size={32} color="var(--color-warning)" style={{ opacity: 0.8 }} />
+                            <p style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                                Transcription is unavailable
+                            </p>
+                            <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', maxWidth: '20rem' }}>
+                                {transcriptionStatus?.reason}
+                            </p>
+                            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '20rem' }}>
+                                Video, chat and the meeting record are unaffected.
+                            </p>
+                        </div>
+                    ) : (
+                        <div className="empty-state">
+                            <MessageSquare size={32} style={{ opacity: 0.3 }} />
+                            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
+                                Transcript will appear here as participants speak
+                            </p>
+                        </div>
+                    )
                 ) : (
                     entries.map((entry) => (
                         <TranscriptEntryItem key={entry.id} entry={entry} />

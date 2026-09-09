@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Video, Bot, Zap, Sparkles } from 'lucide-react'
+import { Video, Bot, Zap, Sparkles, Users, Copy, Check, Link as LinkIcon } from 'lucide-react'
 import { VideoGrid } from '../../components/meeting/VideoGrid'
 import { TranscriptPanel } from '../../components/meeting/TranscriptPanel'
 import { ActionPopupSystem } from '../../components/meeting/ActionPopup'
 import { AssistantDock } from '../../components/meeting/AssistantDock'
 import { useMeetingRoomStore, useToastStore } from '../../store'
-import { meetingApi } from '../../lib/api'
+import { meetingApi, errorMessage } from '../../lib/api'
 import { useMeetingWebSocket, useAudioCapture } from '../../hooks/useWebSocket'
 import type { Meeting } from '../../types'
 
@@ -16,8 +16,51 @@ export function MeetingRoomPage() {
     const { addToast } = useToastStore()
     const {
         currentMeeting, setMeeting, clearRoom, livekitToken,
-        roomRole, isConnected, isMicMuted,
+        roomRole, isConnected, isMicMuted, transcriptionStatus, joinCode,
     } = useMeetingRoomStore()
+
+    /*
+     * The badge used to read "Transcribing" whenever the socket was open, which
+     * is a claim about the socket, not about speech-to-text. If the provider is
+     * unreachable that reads as a working feature producing nothing. The server
+     * now reports whether STT can actually run, and the badge follows it.
+     */
+    const sttOk = isConnected && transcriptionStatus?.available === true
+    const sttReason = transcriptionStatus?.reason ?? null
+    const sttLabel = !livekitToken
+        ? 'Connection failed'
+        : !isConnected
+            ? 'Connecting...'
+            : transcriptionStatus === null
+                ? 'Connecting...'
+                : transcriptionStatus.available
+                    ? 'Transcribing'
+                    : 'Transcription off'
+    const sttColour = sttOk
+        ? 'var(--color-success)'
+        : livekitToken
+            ? 'var(--color-warning)'
+            : 'var(--color-error)'
+
+    // Which of the two copy buttons last succeeded, so the tick appears on the
+    // right one.
+    const [copied, setCopied] = useState<'code' | 'link' | null>(null)
+
+    const copy = async (text: string, which: 'code' | 'link') => {
+        try {
+            await navigator.clipboard.writeText(text)
+            setCopied(which)
+            setTimeout(() => setCopied(null), 1600)
+        } catch {
+            // Clipboard access is refused on insecure origins and in some
+            // browsers; show the value so it can still be copied by hand.
+            addToast({ type: 'info', title: 'Copy this', message: text })
+        }
+    }
+
+    const handleCopyCode = () => joinCode && copy(joinCode, 'code')
+    const handleCopyLink = () =>
+        joinCode && copy(`${window.location.origin}/join/${joinCode}`, 'link')
 
     const [isJoining, setIsJoining] = useState(true)
     const [isEnding, setIsEnding] = useState(false)
@@ -41,24 +84,23 @@ export function MeetingRoomPage() {
                 setIsJoining(true)
                 // Join meeting to get LiveKit token
                 const joinRes = await meetingApi.join(meetingId)
-                const { livekit_token, livekit_url, role } = joinRes.data
+                const { livekit_token, livekit_url, role, join_code } = joinRes.data
 
                 // Fetch full meeting details
                 const meetingRes = await meetingApi.get(meetingId)
                 const meeting: Meeting = meetingRes.data
 
-                setMeeting(meeting, livekit_token, livekit_url, role)
+                setMeeting(meeting, livekit_token, livekit_url, role, join_code)
 
                 // Start meeting if host and not already started
                 if (role === 'host' && meeting.status === 'scheduled') {
                     await meetingApi.start(meetingId)
                 }
             } catch (err: any) {
-                const detail = err.response?.data?.detail
                 addToast({
                     type: 'error',
                     title: err.response?.status === 503 ? 'Video not configured' : 'Failed to join meeting',
-                    message: typeof detail === 'string' ? detail : 'Please try again',
+                    message: errorMessage(err, 'Please try again'),
                 })
                 navigate('/dashboard')
             } finally {
@@ -133,15 +175,31 @@ export function MeetingRoomPage() {
                     </span>
                 </div>
 
+                {joinCode && (
+                    <div className="code-chip" title="Anyone signed in with this code can join">
+                        <Users size={12} />
+                        {joinCode}
+                        <button onClick={handleCopyCode} aria-label="Copy meeting code" title="Copy code">
+                            {copied === 'code' ? <Check size={12} /> : <Copy size={12} />}
+                        </button>
+                        <button onClick={handleCopyLink} aria-label="Copy invite link" title="Copy invite link">
+                            {copied === 'link' ? <Check size={12} /> : <LinkIcon size={12} />}
+                        </button>
+                    </div>
+                )}
+
                 {/* Live indicators */}
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginLeft: 'auto' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        <Zap size={12} color={isConnected ? 'var(--color-success)' : (livekitToken ? 'var(--color-warning)' : 'var(--color-error)')} />
-                        {isConnected ? 'Transcribing' : (livekitToken ? 'Waiting for WS...' : 'Connection Failed')}
+                    <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}
+                        title={sttReason ?? undefined}
+                    >
+                        <Zap size={12} color={sttColour} />
+                        {sttLabel}
                     </div>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        <Bot size={12} color="var(--color-purple)" />
-                        AI Active
+                        <Bot size={12} color={sttOk ? 'var(--color-purple)' : 'var(--text-muted)'} />
+                        {sttOk ? 'AI Active' : 'AI Idle'}
                     </div>
                     <button
                         className={`btn btn-sm ${showAssistant ? 'btn-primary' : 'btn-secondary'}`}
