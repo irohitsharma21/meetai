@@ -53,9 +53,27 @@ disk and keep SQLite.
    | `MONGODB_URL` | the Atlas connection string |
    | `MONGODB_DB_NAME` | `meetai` |
    | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | from LiveKit Cloud |
-   | `GROQ_API_KEY` | from console.groq.com |
+   | `DEEPGRAM_API_KEY` | from console.deepgram.com — speech-to-text |
+   | `OPENROUTER_API_KEY` | from openrouter.ai/keys — reports, action detection, RAG |
    | `ALLOWED_ORIGINS` | `["https://your-app.vercel.app"]` |
    | `GOOGLE_REDIRECT_URI` | `https://your-api.onrender.com/calendar/oauth2callback` |
+
+Speech-to-text and the LLM are two keys because they are two providers:
+Deepgram transcribes the audio, OpenRouter answers over the transcript.
+`STT_PROVIDER` defaults to `deepgram` and needs no entry; set it to `groq`,
+with `GROQ_API_KEY`, only if you would rather run Whisper. Likewise, if
+`OPENROUTER_API_KEY` is left empty and `GROQ_API_KEY` is set, Groq serves the
+LLM instead. Neither key is required to boot — the API starts without them and
+reports the affected features as unconfigured — but both are required for the
+features to do anything.
+
+The default OpenRouter models are free tier, which is what makes a public demo
+affordable and also what makes report generation slow: minutes, summary and
+sentiment over a full transcript ran to roughly 64 s for a nine-turn
+transcript. The frontend already allows 240 s for those calls, so any proxy or
+CDN in front of the API must not cut the request short of that. Free models
+also return 429 routinely; the backend walks `OPENROUTER_FALLBACK_MODELS` when
+that happens, so a busy model costs latency rather than the feature.
 
 Set `DATABASE_BACKEND=mongodb` explicitly rather than leaving it on `auto`. On
 `auto`, an Atlas outage silently falls back to SQLite on an ephemeral disk, and
@@ -98,7 +116,10 @@ transcription silently never connects.
   scheme and no trailing slash.
 - Add the production redirect URI to the Google Cloud OAuth client, or the
   calendar flow fails with `redirect_uri_mismatch`.
-- Check `GET /health` — it reports which database backend is actually live.
+- Check `GET /health` — it reports which database backend is actually live, and
+  whether the transcription and LLM providers answered their startup probe.
+  Both probes are detached background tasks, so a provider that is unreachable
+  shows up there rather than delaying the boot.
 
 ---
 

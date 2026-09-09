@@ -27,7 +27,7 @@ before anyone has left the call.
 |---|---|
 | **Live video** | LiveKit WebRTC SFU, room + token management server-side |
 | **Join by code** | Every meeting gets a shareable code (`abc-defg-hij`) and invite link. Anyone signed in who holds the code can join, so participants do not have to be invited by username first |
-| **Live transcription** | Audio streamed over WebSocket in 1.5 s chunks → Groq Whisper Large v3 |
+| **Live transcription** | Audio streamed over WebSocket in 1.5 s chunks → Deepgram `nova-3`, punctuated and cased. Groq Whisper Large v3 is retained as an alternative backend |
 | **Action detection** | Fast LLM pass over each new utterance; detects scheduling, commitments, deadlines and task assignments, with a confidence score |
 | **Minutes of Meeting** | Structured Markdown: agenda → discussion → decisions → action table → next steps |
 | **Executive summary** | ≤200 words, decision-focused |
@@ -35,7 +35,7 @@ before anyone has left the call.
 | **Calendar** | Google Calendar OAuth2; confirmed actions become events |
 | **Auth** | JWT access + refresh, bcrypt, role-based access |
 | **Ask your meetings** | Semantic search across every transcript. Local embeddings (fastembed ONNX) into an embedded Qdrant collection; answers cite the passage they came from |
-| **Voice assistant** | Push-to-talk during a meeting: Whisper STT → grounded LLM answer → spoken reply. Provider-agnostic TTS |
+| **Voice assistant** | Push-to-talk during a meeting: speech-to-text → grounded LLM answer → spoken reply. Provider-agnostic TTS |
 | **Meeting analytics** | Share of voice, turns, questions, fillers, participation balance, salient topics — computed from the transcript, no API calls |
 | **Email digest** | Post-meeting summary, action items and participation stats mailed to participants |
 | **Transcript export** | TXT or JSON |
@@ -114,7 +114,15 @@ Everything lives in `backend/.env` (see `.env.example`).
 | `SQLITE_PATH` | | defaults to `./data/meetai.db` |
 | `MONGODB_URL` | | only for the `mongodb` backend |
 | `LIVEKIT_URL` / `_API_KEY` / `_API_SECRET` | for video | free tier at [cloud.livekit.io](https://cloud.livekit.io/) |
-| `GROQ_API_KEY` | for AI | free key at [console.groq.com](https://console.groq.com/keys) |
+| `STT_PROVIDER` | | `deepgram` *(default)* \| `groq` |
+| `DEEPGRAM_API_KEY` | for transcription | free credit at [console.deepgram.com](https://console.deepgram.com/signup) |
+| `DEEPGRAM_MODEL` / `DEEPGRAM_LANGUAGE` | | default to `nova-3` and `en` |
+| `OPENROUTER_API_KEY` | for AI | free key at [openrouter.ai](https://openrouter.ai/keys); every default model is free tier |
+| `OPENROUTER_MODEL` / `_FAST_MODEL` | | `nex-agi/nex-n2.5-pro:free` and `nex-agi/nex-n2.5-mini:free` |
+| `OPENROUTER_FALLBACK_MODELS` | | ordered list tried when the primary model is busy |
+| `OPENROUTER_BASE_URL` | | only to point at another OpenAI-compatible endpoint |
+| `OPENROUTER_SITE_URL` / `OPENROUTER_APP_NAME` | | attribution headers, per OpenRouter's convention |
+| `GROQ_API_KEY` | | alternative backend — speech-to-text when `STT_PROVIDER=groq`, and the LLM when `OPENROUTER_API_KEY` is empty |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | for calendar | Google Cloud Console |
 | `SMTP_HOST` / `_PORT` / `_FROM` | for digests | any SMTP provider |
 | `TTS_PROVIDER` | | `browser` (no key) \| `elevenlabs` \| `murf` \| `sarvam` |
@@ -127,31 +135,110 @@ python -c "import secrets; print(secrets.token_hex(32))"              # SECRET_K
 python -c "import os,base64; print(base64.b64encode(os.urandom(32)).decode())"  # ENCRYPTION_KEY
 ```
 
+### Why these two providers
+
+Speech-to-text defaults to Deepgram because the browser's `MediaRecorder`
+produces WebM/Opus and Deepgram decodes that container natively — there is no
+transcode step, and therefore no ffmpeg in the request path. `smart_format`
+returns punctuation and casing, which earns its place twice over: the
+transcript is read by people, and it is also fed to an LLM whose action
+detection works better on punctuated text than on an undifferentiated run of
+words. Groq Whisper is kept as an alternative backend for anyone who already
+holds a Groq key — set `STT_PROVIDER=groq`.
+
+In practice `nova-3` transcribed a WebM/Opus clip of synthesised speech
+word-perfectly in about 1.7 s, punctuation and the proper noun "Priya"
+included, and the action-detection pass over it returned in 1.8 s with the task
+("Send the vendor contract"), assignee ("Priya") and deadline ("Friday") all
+correct at 0.98 confidence.
+
+The LLM is OpenRouter, which speaks the OpenAI chat-completions dialect and
+fronts many providers behind one key, so changing model is an `.env` edit
+rather than a client rewrite. The default models are all free tier, so the AI
+features are demonstrable without a payment method. Groq remains the fallback:
+if `OPENROUTER_API_KEY` is empty and `GROQ_API_KEY` is set, the same prompts
+run there instead.
+
 ### Missing keys degrade, they do not crash
 
-The app boots and runs with no credentials at all. Without `GROQ_API_KEY`,
+The app boots and runs with no credentials at all. Without `DEEPGRAM_API_KEY`,
 meetings still work — video, rooms, participants, transcripts you type — and
-transcription and report generation return a clear "not configured" message
-naming the key to set. Without LiveKit, everything but joining a room works.
+transcription returns a clear "not configured" message naming the key to set.
+Without an LLM key, report generation does the same. Without LiveKit,
+everything but joining a room works.
 
-Crucially, a degraded feature says so. The API probes the transcription
-provider once at startup, so `GET /health` reports the truth before anyone
-joins a meeting:
+Crucially, a degraded feature says so. Both providers are probed once at
+startup, so `GET /health` reports the truth before anyone joins a meeting:
+
+```jsonc
+"transcription": {
+  "available": true, "reason": null,
+  "model": "nova-3", "provider": "deepgram"
+},
+"llm": {
+  "available": true, "provider": "openrouter",
+  "model": "nex-agi/nex-n2.5-pro:free", "reason": null
+}
+```
+
+When a key is rejected the same fields carry the reason instead:
 
 ```jsonc
 "transcription": {
   "available": false,
-  "reason": "Groq rejected the API key (401). Speech-to-text is off until a
-             valid GROQ_API_KEY is set in backend/.env and the API restarts.",
-  "model": "whisper-large-v3", "provider": "groq"
+  "reason": "Deepgram rejected the API key (401). Speech-to-text is off until
+             a valid DEEPGRAM_API_KEY is set in backend/.env and the API
+             restarts.",
+  "model": "nova-3", "provider": "deepgram"
 }
 ```
+
+Both probes run as detached background tasks at startup, so a provider that is
+slow or unreachable cannot hold the app closed while it waits on a third
+party. The service boots, and the health endpoint fills in the answer when it
+arrives.
 
 The same status is pushed over the meeting WebSocket on connect. The room
 header reads **Transcription off** rather than "Transcribing", and the
 transcript panel states the reason. An empty transcript panel otherwise has two
 indistinguishable causes — nobody has spoken, or speech-to-text cannot run at
 all — and only the server knows which.
+
+---
+
+## One LLM client, one fallback chain
+
+Every AI feature — action detection, minutes, executive summary, sentiment, RAG
+answers and the voice assistant — goes through
+[`services/llm_client.py`](backend/services/llm_client.py). Centralising access
+makes the model an `.env` value rather than something written into six separate
+call sites, and leaves one place that has to know how a provider misbehaves.
+
+On the free tier a 429 is routine rather than exceptional: a model can be busy
+for a few seconds and be perfectly fine immediately afterwards. A single-model
+client reports that as "AI reports are broken". So each request walks
+`OPENROUTER_MODEL` and then `OPENROUTER_FALLBACK_MODELS` in order until one
+answers, and a busy model degrades into a slower answer rather than a failed
+feature.
+
+The status codes are not treated alike. A 429 or a 5xx moves to the next model,
+because the request is fine and the model is not. A 401 disables the client
+outright and records the reason — a rejected key never fixes itself, and
+retrying it on every request turns one configuration mistake into a flood of
+identical failures.
+
+Responses are parsed tolerantly. Several free models emit their reasoning
+alongside the answer, or wrap the JSON in a markdown fence, whatever the prompt
+asked for. The parser scans for a balanced JSON object rather than using a
+greedy `{.*}`, which swallows trailing prose and fails on any response that
+continues past the JSON.
+
+Timeouts follow from the same arithmetic. Minutes, summary and sentiment over a
+full transcript run past a minute on free models — roughly 64 s for a nine-turn
+transcript — so the frontend allows 240 s for `generate-report`, `insights/ask`
+and the assistant rather than the default 30 s. A client that gives up while
+the server is still working produces an error message and a finished report
+that nobody ever sees.
 
 ---
 
@@ -216,7 +303,7 @@ morning."* — carries almost no retrievable meaning; the question it answers is
 in the turn before it. Windows of six turns overlap by three so an exchange is
 never split across a boundary.
 
-Retrieval works with no LLM key at all. Only the composed answer needs Groq,
+Retrieval works with no LLM key at all. Only the composed answer needs a model,
 and when that fails the passages are still returned with the reason stated.
 
 ---
@@ -226,10 +313,10 @@ and when that fails the passages are still returned with the reason stated.
 Hold the mic during a meeting and ask a question aloud:
 
 ```
-mic ──► Whisper STT ──► question
-                            │
-          live transcript ──┼──► LLM ──► answer ──► TTS ──► spoken reply
-          past meetings  ───┘
+mic ──► Deepgram STT ──► question
+                             │
+           live transcript ──┼──► LLM ──► answer ──► TTS ──► spoken reply
+           past meetings  ───┘
 ```
 
 It is grounded twice: recent turns of the current meeting for immediate context
@@ -286,7 +373,8 @@ backend/
   models/meeting_model.py all pydantic models
   services/
     livekit_service.py    room + access token management
-    transcription_service.py  audio buffering → Groq Whisper
+    transcription_service.py  audio buffering → Deepgram (or Groq Whisper)
+    llm_client.py             one LLM client, model fallback, tolerant JSON
     ai_analysis_service.py    prompts, action detection, reports
     calendar_service.py   Google Calendar OAuth2
     search_service.py     chunking, local embeddings, Qdrant retrieval
@@ -325,7 +413,7 @@ Connect to `ws://localhost:8000/meetings/{meeting_id}/ws`.
 // server → client
 {"type": "connected", "username": "alice"}
 {"type": "transcription_status", "available": false,
- "reason": "Groq rejected the API key (401). ...", "model": "whisper-large-v3"}
+ "reason": "Deepgram rejected the API key (401). ...", "model": "nova-3"}
 {"type": "transcript", "entry": {"speaker": "alice", "text": "...", "time": "00:01:23"}}
 {"type": "action_detected", "result": {"trigger": true, "type": "schedule",
                                         "confidence": 0.92,

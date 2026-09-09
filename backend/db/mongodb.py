@@ -19,6 +19,7 @@ knows or cares which one is live.
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import asyncio
 from typing import AsyncGenerator
 
 from pymongo import ASCENDING, TEXT, IndexModel
@@ -225,10 +226,16 @@ async def lifespan(app) -> AsyncGenerator:
 
     # Imported here rather than at module scope: db and services would
     # otherwise import each other in a cycle.
+    from services.llm_client import llm_client
     from services.transcription_service import transcription_service
-    await transcription_service.verify_credentials()
 
     await _backfill_join_codes()
+
+    # Provider probes run detached. They exist so /health is honest early, but
+    # an unreachable or slow provider must never stop the app from starting -
+    # everything except that one feature works without it.
+    asyncio.create_task(transcription_service.verify_credentials())
+    asyncio.create_task(llm_client.verify())
 
     yield
     await close_db()

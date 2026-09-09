@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 
 from core.config import settings
 from db.mongodb import lifespan
+from services.llm_client import llm_client
 from services.transcription_service import transcription_service
 from fastapi.exceptions import RequestValidationError
 from routers import (
@@ -25,12 +26,10 @@ from routers import (
     meeting_routes, transcript_routes,
 )
 
-# Groq config check
-print(f"✅ Groq Configured: {settings.groq_configured}")
-if settings.groq_configured:
-    masked_key = settings.GROQ_API_KEY[:6] + "..." + settings.GROQ_API_KEY[-4:]
-    print(f"🔑 Using Groq Key: {masked_key}")
-    print(f"🎙️ Transcription Model: {settings.GROQ_TRANSCRIPTION_MODEL}")
+# Provider summary at boot. Key material is never printed - even a partial key
+# in a log is a partial key in every log aggregator downstream.
+print(f"[stt] provider={settings.STT_PROVIDER} configured={settings.stt_configured}")
+print(f"[llm] openrouter={settings.openrouter_configured} groq={settings.groq_configured}")
 
 # ── App factory ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -40,12 +39,12 @@ app = FastAPI(
 ## AI-Enhanced Meeting Platform (Proof of Record System)
 
 A production-ready AI meeting system with:
-- 🎥 HD video/audio via LiveKit
-- 🗣️ Real-time speech-to-text (Groq Whisper)
-- 🤖 AI commitment & scheduling detection
-- 📊 Post-meeting summaries, MoM, and sentiment analysis
-- 📅 Google Calendar integration
-- 🔐 JWT authentication & role-based access
+- HD video/audio via LiveKit
+- Real-time speech-to-text (Groq Whisper)
+- AI commitment & scheduling detection
+- Post-meeting summaries, MoM, and sentiment analysis
+- Google Calendar integration
+- JWT authentication & role-based access
     """,
     lifespan=lifespan,
     docs_url="/docs",
@@ -106,6 +105,7 @@ async def health_check():
             # having to join a meeting and wait for a transcript that never
             # arrives.
             "transcription": transcription_service.status,
+            "llm": llm_client.status,
         }
     )
 

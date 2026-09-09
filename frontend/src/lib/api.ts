@@ -8,6 +8,14 @@ const api = axios.create({
     timeout: 30000,
 })
 
+/*
+ * LLM-backed endpoints need their own budget. Generating minutes, a summary and
+ * a sentiment pass over a full transcript runs well past a minute on free-tier
+ * models, and the default 30s timeout would abort a request the server is still
+ * happily working on - which surfaces to the user as a failure that isn't one.
+ */
+const AI_TIMEOUT = 240_000
+
 // ── Request interceptor: attach JWT ───────────────────────────────────
 api.interceptors.request.use((config) => {
     const token = localStorage.getItem('access_token')
@@ -111,7 +119,7 @@ export const meetingApi = {
     start: (id: string) => api.post(`/meetings/${id}/start`),
     end: (id: string) => api.post(`/meetings/${id}/end`),
     generateReport: (id: string, report_types: string[]) =>
-        api.post(`/meetings/${id}/generate-report`, { report_types }),
+        api.post(`/meetings/${id}/generate-report`, { report_types }, { timeout: AI_TIMEOUT }),
     confirmAction: (meetingId: string, actionId: string) =>
         api.post(`/meetings/${meetingId}/actions/${actionId}/confirm`),
     rejectAction: (meetingId: string, actionId: string) =>
@@ -155,21 +163,21 @@ export const insightApi = {
     search: (query: string, limit = 6) =>
         api.post('/insights/search', { query, limit }),
     ask: (query: string, limit = 6) =>
-        api.post('/insights/ask', { query, limit }),
+        api.post('/insights/ask', { query, limit }, { timeout: AI_TIMEOUT }),
     index: (meetingId: string) => api.post(`/insights/${meetingId}/index`),
     reindexAll: () => api.post('/insights/reindex-all'),
     searchStatus: () => api.get('/insights/search/status'),
 
     assistantStatus: () => api.get('/insights/assistant/status'),
     assistantAsk: (meetingId: string, question: string, speak = true) =>
-        api.post(`/insights/${meetingId}/assistant/ask`, { question, speak }),
+        api.post(`/insights/${meetingId}/assistant/ask`, { question, speak }, { timeout: AI_TIMEOUT }),
     assistantListen: (meetingId: string, audio: Blob, speak = true) => {
         const body = new FormData()
         // The filename matters: Groq's Whisper endpoint infers the container
         // from the extension, and rejects the upload without one.
         body.append('audio', audio, 'question.webm')
         body.append('speak', String(speak))
-        return api.post(`/insights/${meetingId}/assistant/listen`, body)
+        return api.post(`/insights/${meetingId}/assistant/listen`, body, { timeout: AI_TIMEOUT })
     },
 
     emailStatus: () => api.get('/insights/email/status'),

@@ -299,14 +299,19 @@ class SearchService:
                 "grounded": False,
             }
 
-        if not settings.groq_configured:
+        from services.llm_client import llm_client
+
+        if not llm_client.available:
+            # Retrieval is the valuable half and it already succeeded, so hand
+            # back the passages rather than failing the whole request.
             return {
                 "query": query,
                 "answer": None,
                 "passages": [p.to_dict() for p in passages],
                 "grounded": False,
-                "note": "GROQ_API_KEY is not set — showing retrieved passages "
-                        "without a composed answer.",
+                "note": llm_client.status["reason"]
+                        or "No LLM is configured - showing retrieved passages "
+                           "without a composed answer.",
             }
 
         from services.ai_analysis_service import AIAnalysisService

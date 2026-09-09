@@ -36,6 +36,8 @@ from typing import Sequence
 from core.config import settings
 from models.meeting_model import TranscriptEntry
 from services.ai_analysis_service import AIAnalysisService, AIUnavailable
+from services.llm_client import llm_client
+from services.transcription_service import transcription_service
 from services.search_service import search_service
 from services.tts_service import tts_service
 
@@ -85,7 +87,8 @@ class AssistantService:
 
     @property
     def available(self) -> bool:
-        return settings.groq_configured
+        """The assistant needs an LLM to answer; speech is checked separately."""
+        return llm_client.available
 
     def describe(self) -> dict:
         return {
@@ -97,27 +100,24 @@ class AssistantService:
 
     # ── speech in ─────────────────────────────────────────────────────
     async def transcribe(self, audio: bytes, mime_type: str = "audio/webm") -> str:
-        """Transcribe a spoken question with Groq Whisper."""
-        if not self.available:
-            raise AIUnavailable(
-                "GROQ_API_KEY is not set. The voice assistant needs it for "
-                "speech-to-text. Get a free key at https://console.groq.com/keys"
-            )
+        """
+        Transcribe a spoken question.
 
-        suffix = "webm" if "webm" in mime_type else "wav"
+        Delegates to the same provider the live transcript uses, so the
+        assistant cannot end up on a different speech backend to the meeting
+        it is answering questions about.
+        """
+        status = transcription_service.status
+        if not status["available"]:
+            raise AIUnavailable(str(status["reason"]))
+
         try:
-            response = await self._ai._client.audio.transcriptions.create(
-                file=(f"question.{suffix}", io.BytesIO(audio), mime_type),
-                model=settings.GROQ_TRANSCRIPTION_MODEL,
-                language="en",
-                temperature=0.0,
-            )
+            return await transcription_service.transcribe_once(audio, mime_type)
         except Exception as exc:
             raise AIUnavailable(
                 f"Speech-to-text failed ({exc.__class__.__name__}). "
-                "Check GROQ_API_KEY in backend/.env."
+                f"Check {status['provider']} credentials in backend/.env."
             ) from exc
-        return (response.text or "").strip()
 
     @staticmethod
     def strip_wake_word(text: str) -> tuple[str, bool]:
@@ -139,10 +139,7 @@ class AssistantService:
     ) -> AssistantReply:
         """Answer a question, optionally synthesising speech for the reply."""
         if not self.available:
-            raise AIUnavailable(
-                "GROQ_API_KEY is not set. Add a free key from "
-                "https://console.groq.com/keys to enable the assistant."
-            )
+            raise AIUnavailable(llm_client.status["reason"] or "No LLM is configured.")
 
         # Recent turns only: the whole transcript would bury the question and
         # burn context on the parts nobody is asking about.

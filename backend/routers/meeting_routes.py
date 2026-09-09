@@ -114,7 +114,7 @@ async def create_meeting(
     try:
         await livekit_service.create_room(meeting.room_name)
     except Exception as e:
-        print(f"⚠️ LiveKit room pre-creation failed: {e}")
+        print(f"LiveKit room pre-creation failed: {e}")
 
     return {
         "meeting_id": meeting.meeting_id,
@@ -496,7 +496,7 @@ async def meeting_websocket(
       {cmd: "audio_config", format: "webm|pcm", sample_rate: 16000}
     """
     await websocket.accept()
-    print(f"🔌 WebSocket connection initiated for {meeting_id}")
+    print(f"WebSocket connection initiated for {meeting_id}")
 
     username = "anonymous"
     is_webm = True
@@ -543,67 +543,95 @@ async def meeting_websocket(
             **transcription_service.status,
         })
 
+        async def publish_entry(entry) -> None:
+            """Persist one transcript entry, fan it out, and look for actions."""
+            await col.update_one(
+                {"meeting_id": meeting_id},
+                {"$push": {"transcript": entry.dict()}},
+            )
+            await manager.broadcast(
+                meeting_id, {"type": "transcript", "entry": entry.dict()}
+            )
+
+            async def run_detection(e, ctx):
+                try:
+                    action = await ai_analysis_service.detect_next_action(e, ctx)
+                    if action.trigger:
+                        if action.next_action:
+                            await col.update_one(
+                                {"meeting_id": meeting_id},
+                                {"$push": {"ai_analysis.next_actions": action.next_action.dict()}},
+                            )
+                        await manager.broadcast(
+                            meeting_id,
+                            {"type": "action_detected", "result": action.dict()},
+                        )
+                except Exception as exc:
+                    print(f"Action detection error: {exc}")
+
+            # Detection runs detached so a slow model never stalls transcription.
+            updated = await col.find_one(
+                {"meeting_id": meeting_id}, {"transcript": {"$slice": -15}}
+            )
+            context = [from_dict(it) for it in (updated or {}).get("transcript", [])]
+            asyncio.create_task(run_detection(entry, context))
+
+        async def sweep_idle_buffers() -> None:
+            """
+            Flush buffers that have gone quiet.
+
+            Audio was previously only ever sent when the *next* chunk arrived,
+            so the last thing a person said before falling silent stayed in the
+            buffer until the meeting ended. This timer closes that gap.
+            """
+            try:
+                while True:
+                    await asyncio.sleep(0.75)
+                    for entry in await transcription_service.flush_stale(meeting_id):
+                        await publish_entry(entry)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                print(f"Idle-flush sweep stopped: {type(exc).__name__}: {exc}")
+
+        # Prefer streaming. Deepgram keeps decoder state across the whole
+        # stream, so the browser's headerless WebM fragments are handled
+        # natively instead of being reassembled here.
+        live = await transcription_service.open_live_session(
+            meeting_id, username, publish_entry
+        )
+
+        # The idle sweeper only has work to do on the buffered path; streaming
+        # does its own utterance segmentation.
+        sweeper = None if live else asyncio.create_task(sweep_idle_buffers())
+
         while True:
             message = await websocket.receive()
 
             if message["type"] == "websocket.disconnect":
-                print(f"🔌 WebSocket Disconnected: {username}")
+                print(f"WebSocket Disconnected: {username}")
                 break
 
             # Handle text commands
             if "text" in message:
                 data = json.loads(message["text"])
                 if data.get("cmd") == "audio_config":
-                    print(f"⚙️ Audio Config received: {data}")
+                    print(f"Audio Config received: {data}")
                     is_webm = data.get("format", "webm") == "webm"
 
             # Handle binary audio data
             elif "bytes" in message and message["bytes"]:
-                audio_data = message["bytes"]
-                # print(f"📥 Received {len(audio_data)} bytes of audio") # too chatty but useful for final check if needed
-
-
-                entry = await transcription_service.process_audio_chunk(
-                    meeting_id=meeting_id,
-                    speaker_id=username,
-                    audio_data=audio_data,
-                    is_webm=is_webm,
-                )
-
-                if entry:
-                    # Persist transcript entry
-                    await col.update_one(
-                        {"meeting_id": meeting_id},
-                        {"$push": {"transcript": entry.dict()}},
+                if live is not None:
+                    await live.feed(message["bytes"])
+                else:
+                    entry = await transcription_service.process_audio_chunk(
+                        meeting_id=meeting_id,
+                        speaker_id=username,
+                        audio_data=message["bytes"],
+                        is_webm=is_webm,
                     )
-
-                    # Broadcast transcript to all participants
-                    await manager.broadcast(
-                        meeting_id,
-                        {"type": "transcript", "entry": entry.dict()},
-                    )
-
-                    # Run action detection in background so it doesn't block transcription
-                    async def run_detection(e, ctx):
-                        try:
-                            action = await ai_analysis_service.detect_next_action(e, ctx)
-                            if action.trigger:
-                                if action.next_action:
-                                    await col.update_one(
-                                        {"meeting_id": meeting_id},
-                                        {"$push": {"ai_analysis.next_actions": action.next_action.dict()}}
-                                    )
-                                await manager.broadcast(
-                                    meeting_id,
-                                    {"type": "action_detected", "result": action.dict()},
-                                )
-                        except Exception as e:
-                            print(f"⚠️ Action detection error: {e}")
-
-                    # Retrieve context and schedule task
-                    updated = await col.find_one({"meeting_id": meeting_id}, {"transcript": {"$slice": -15}})
-                    context = [from_dict(it) for it in (updated or {}).get("transcript", [])]
-                    asyncio.create_task(run_detection(entry, context))
+                    if entry:
+                        await publish_entry(entry)
 
     except WebSocketDisconnect:
         pass
@@ -613,6 +641,20 @@ async def meeting_websocket(
         except Exception:
             pass
     finally:
+        # locals() because an early return (bad token, missing meeting) can
+        # reach this block before the sweeper is ever created.
+        # locals() because an early return (bad token, missing meeting) can
+        # reach this block before either of these exists.
+        sweeper = locals().get("sweeper")
+        if sweeper is not None:
+            sweeper.cancel()
+
+        live = locals().get("live")
+        if live is not None:
+            # Closing flushes whatever Deepgram is still holding, so the last
+            # thing said before someone leaves still reaches the transcript.
+            await live.close()
+
         manager.disconnect(meeting_id, websocket)
 
 

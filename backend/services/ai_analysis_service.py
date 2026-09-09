@@ -13,9 +13,9 @@ import json
 import re
 from typing import List, Optional
 
-from groq import AsyncGroq
 
 from core.config import settings
+from services.llm_client import LLMUnavailable, extract_json, llm_client
 from models.meeting_model import (
     AIAnalysis,
     ActionDetectionResult,
@@ -146,55 +146,33 @@ class AIUnavailable(RuntimeError):
 
 
 class AIAnalysisService:
-    """Groq LLM-powered analysis for real-time action detection and report generation."""
+    """LLM-powered analysis for action detection and report generation.
+
+    Model selection, provider choice and retry behaviour all live in
+    `llm_client`; this class owns only the prompts and the shape of the result.
+    """
 
     def __init__(self):
-        # The client is created lazily so the app boots without a Groq key.
-        # AI features then report themselves as unconfigured instead of the
-        # whole service failing at import time.
-        self._client: Optional[AsyncGroq] = (
-            AsyncGroq(api_key=settings.GROQ_API_KEY)
-            if settings.groq_configured
-            else None
-        )
-        self._main_model = settings.GROQ_LLM_MODEL
-        self._fast_model = settings.GROQ_LLM_FAST_MODEL
+        self._llm = llm_client
 
     @property
     def available(self) -> bool:
-        return self._client is not None
+        return self._llm.available
 
     # ── Helper: parse JSON from LLM response ──────────────────────────────────
     @staticmethod
     def _extract_json(text: str) -> dict:
-        """Extract JSON block from LLM response, handling markdown code fences."""
-        # Strip markdown code fences if present
-        cleaned = re.sub(r"```(?:json)?", "", text).strip()
-        # Find first { ... } block
-        match = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if match:
-            try:
-                return json.loads(match.group())
-            except json.JSONDecodeError:
-                pass
-        raise ValueError(f"No valid JSON found in LLM response")
+        """Extract the JSON object from a model response. See llm_client."""
+        return extract_json(text)
 
     async def _chat(self, prompt: str, temperature: float = 0.3, fast: bool = False) -> str:
-        """Send a chat completion request to Groq."""
-        if self._client is None:
-            raise AIUnavailable(
-                "GROQ_API_KEY is not set. Add a free key from "
-                "https://console.groq.com/keys to backend/.env to enable "
-                "transcription and AI reports."
-            )
-        model = self._fast_model if fast else self._main_model
-        response = await self._client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=temperature,
-            max_tokens=4096,
-        )
-        return response.choices[0].message.content.strip()
+        """Send a chat completion request through the configured provider."""
+        try:
+            return await self._llm.chat(prompt, temperature=temperature, fast=fast)
+        except LLMUnavailable as exc:
+            # Callers already degrade gracefully on AIUnavailable, so keep that
+            # contract rather than leaking a second exception type outwards.
+            raise AIUnavailable(str(exc)) from exc
 
     # ── 1. Real-time action detection ─────────────────────────────────────────
     async def detect_next_action(
@@ -243,7 +221,7 @@ class AIAnalysisService:
             )
 
         except Exception as e:
-            print(f"⚠️ Action detection error: {e}")
+            print(f"Action detection error: {e}")
             return ActionDetectionResult(trigger=False, confidence=0.0)
 
     # ── 2. Post-meeting summary ────────────────────────────────────────────────
@@ -307,7 +285,7 @@ class AIAnalysisService:
                 emotional_tone=data.get("emotional_tone"),
             )
         except Exception as e:
-            print(f"⚠️ Sentiment analysis error: {e}")
+            print(f"Sentiment analysis error: {e}")
             return SentimentResult(overall=SentimentLabel.NEUTRAL, confidence=0.5)
 
     # ── 5. Full report orchestration ──────────────────────────────────────────
