@@ -4,11 +4,12 @@ import ReactMarkdown from 'react-markdown'
 import {
     ArrowLeft, FileText, CheckCircle2,
     Clock, Users, Sparkles, Brain, Calendar,
-    TrendingUp, TrendingDown, Minus, Download, RefreshCw
+    TrendingUp, TrendingDown, Minus, Download, RefreshCw, BarChart3, Mail
 } from 'lucide-react'
-import { meetingApi, transcriptApi } from '../../lib/api'
+import { insightApi, meetingApi, transcriptApi } from '../../lib/api'
 import { useToastStore } from '../../store'
 import { TranscriptPanel } from '../../components/meeting/TranscriptPanel'
+import { AnalyticsPanel } from '../../components/meeting/AnalyticsPanel'
 import type { Meeting, SentimentLabel } from '../../types'
 import { format } from 'date-fns'
 
@@ -143,7 +144,10 @@ export function ReportPage() {
     const [meeting, setMeeting] = useState<Meeting | null>(null)
     const [isLoading, setIsLoading] = useState(true)
     const [isGenerating, setIsGenerating] = useState(false)
-    const [activeTab, setActiveTab] = useState<'summary' | 'mom' | 'transcript' | 'actions'>('summary')
+    const [isSendingDigest, setIsSendingDigest] = useState(false)
+    const [activeTab, setActiveTab] = useState<
+        'summary' | 'mom' | 'transcript' | 'actions' | 'analytics'
+    >('summary')
 
     const loadMeeting = async () => {
         try {
@@ -186,6 +190,28 @@ export function ReportPage() {
         }
     }
 
+    const handleDigest = async () => {
+        setIsSendingDigest(true)
+        try {
+            const res = await insightApi.sendDigest(meetingId!)
+            addToast({
+                type: res.data.sent > 0 ? 'success' : 'info',
+                title: res.data.sent > 0 ? 'Digest sent' : 'Nothing sent',
+                message: res.data.sent > 0
+                    ? `Delivered to ${res.data.sent} participant${res.data.sent === 1 ? '' : 's'}`
+                    : res.data.note ?? 'No participants had an email address on file',
+            })
+        } catch (err: any) {
+            addToast({
+                type: 'error',
+                title: 'Could not send digest',
+                message: err?.response?.data?.detail ?? 'Email is not configured',
+            })
+        } finally {
+            setIsSendingDigest(false)
+        }
+    }
+
     if (isLoading) {
         return (
             <div className="page">
@@ -211,6 +237,7 @@ export function ReportPage() {
         { key: 'mom', label: 'Minutes', icon: <FileText size={14} /> },
         { key: 'transcript', label: 'Transcript', icon: <Users size={14} /> },
         { key: 'actions', label: `Actions (${analysis.next_actions.length})`, icon: <CheckCircle2 size={14} /> },
+        { key: 'analytics', label: 'Analytics', icon: <BarChart3 size={14} /> },
     ]
 
     return (
@@ -248,6 +275,17 @@ export function ReportPage() {
                             <button className="btn btn-secondary btn-sm" onClick={handleExport}>
                                 <Download size={14} /> Export
                             </button>
+                            <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={handleDigest}
+                                disabled={isSendingDigest}
+                                title="Email the summary and action items to participants"
+                            >
+                                {isSendingDigest
+                                    ? <RefreshCw size={14} className="spin" />
+                                    : <Mail size={14} />}
+                                Email digest
+                            </button>
                             <button className="btn btn-primary" onClick={handleGenerateReport} disabled={isGenerating}>
                                 {isGenerating ? (
                                     <><RefreshCw size={15} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</>
@@ -281,6 +319,10 @@ export function ReportPage() {
                 </div>
 
                 {/* Tab content */}
+                {activeTab === 'analytics' && meetingId && (
+                    <AnalyticsPanel meetingId={meetingId} />
+                )}
+
                 {activeTab === 'summary' && (
                     <div className="card animate-fadeIn">
                         {analysis.summary ? (

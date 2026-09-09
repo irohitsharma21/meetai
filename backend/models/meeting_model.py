@@ -41,7 +41,10 @@ class TranscriptEntry(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     speaker: str
     text: str
-    time: str  # HH:MM:SS
+    # HH:MM:SS from meeting start. Optional on input: the server derives it
+    # from the meeting's start time so callers appending a correction do not
+    # have to compute an offset by hand.
+    time: str = "00:00:00"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     timestamp_ms: Optional[int] = None  # milliseconds from meeting start
 

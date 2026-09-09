@@ -7,6 +7,7 @@ import { DashboardPage } from './pages/dashboard/DashboardPage'
 import { MeetingRoomPage } from './pages/meeting/MeetingRoomPage'
 import { ReportPage } from './pages/report/ReportPage'
 import { CalendarPage } from './pages/calendar/CalendarPage'
+import { AskPage } from './pages/ask/AskPage'
 import { useAuthStore } from './store'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -73,6 +74,12 @@ export default function App() {
                 <Route path="/meetings/:meetingId/report" element={
                     <ProtectedRoute>
                         <Layout crumb="Report"><ReportPage /></Layout>
+                    </ProtectedRoute>
+                } />
+
+                <Route path="/ask" element={
+                    <ProtectedRoute>
+                        <Layout crumb="Ask"><AskPage /></Layout>
                     </ProtectedRoute>
                 } />
 

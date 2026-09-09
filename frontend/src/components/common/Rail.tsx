@@ -1,6 +1,6 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
-    Calendar, FileText, LayoutDashboard, LogOut, Sparkles, Video,
+    Calendar, LayoutDashboard, LogOut, Sparkles, Video,
 } from 'lucide-react'
 import { useAuthStore } from '../../store'
 
@@ -46,18 +46,13 @@ export function Rail() {
 
             <div className="rail-label">Insights</div>
             <Link
-                to="/dashboard?filter=processed"
+                to="/ask"
                 className="nav-item"
-                aria-current={undefined}
+                aria-current={pathname.startsWith('/ask') ? 'page' : undefined}
             >
-                <FileText size={15} />
-                Reports
-            </Link>
-            <span className="nav-item" style={{ cursor: 'default', opacity: 0.55 }}>
                 <Sparkles size={15} />
-                Assistant
-                <span className="nav-count">soon</span>
-            </span>
+                Ask your meetings
+            </Link>
 
             <div className="rail-footer">
                 <button

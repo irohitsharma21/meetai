@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { Video, Bot, Zap } from 'lucide-react'
+import { Video, Bot, Zap, Sparkles } from 'lucide-react'
 import { VideoGrid } from '../../components/meeting/VideoGrid'
 import { TranscriptPanel } from '../../components/meeting/TranscriptPanel'
 import { ActionPopupSystem } from '../../components/meeting/ActionPopup'
+import { AssistantDock } from '../../components/meeting/AssistantDock'
 import { useMeetingRoomStore, useToastStore } from '../../store'
 import { meetingApi } from '../../lib/api'
 import { useMeetingWebSocket, useAudioCapture } from '../../hooks/useWebSocket'
@@ -20,6 +21,7 @@ export function MeetingRoomPage() {
 
     const [isJoining, setIsJoining] = useState(true)
     const [isEnding, setIsEnding] = useState(false)
+    const [showAssistant, setShowAssistant] = useState(false)
 
     // WebSocket for transcription
     const { sendAudio } = useMeetingWebSocket(meetingId && livekitToken ? meetingId : null)
@@ -102,7 +104,11 @@ export function MeetingRoomPage() {
     }
 
     return (
-        <div style={{ height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg-base)' }}>
+        <div style={{ position: 'relative', height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--color-bg-base)' }}>
+            {showAssistant && meetingId && (
+                <AssistantDock meetingId={meetingId} onClose={() => setShowAssistant(false)} />
+            )}
+
             {/* Header bar */}
             <div style={{
                 height: 52,
@@ -137,6 +143,13 @@ export function MeetingRoomPage() {
                         <Bot size={12} color="var(--color-purple)" />
                         AI Active
                     </div>
+                    <button
+                        className={`btn btn-sm ${showAssistant ? 'btn-primary' : 'btn-secondary'}`}
+                        onClick={() => setShowAssistant((v) => !v)}
+                        title="Ask the assistant about this meeting"
+                    >
+                        <Sparkles size={13} /> Assistant
+                    </button>
                     {roomRole && (
                         <span className={`badge ${roomRole === 'host' ? 'badge-blue' : 'badge-gray'}`}>
                             {roomRole}

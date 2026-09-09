@@ -33,6 +33,10 @@ before anyone has left the call.
 | **Sentiment analysis** | Overall tone plus emotional shifts by timestamp |
 | **Calendar** | Google Calendar OAuth2; confirmed actions become events |
 | **Auth** | JWT access + refresh, bcrypt, role-based access |
+| **Ask your meetings** | Semantic search across every transcript. Local embeddings (fastembed ONNX) into an embedded Qdrant collection; answers cite the passage they came from |
+| **Voice assistant** | Push-to-talk during a meeting: Whisper STT → grounded LLM answer → spoken reply. Provider-agnostic TTS |
+| **Meeting analytics** | Share of voice, turns, questions, fillers, participation balance, salient topics — computed from the transcript, no API calls |
+| **Email digest** | Post-meeting summary, action items and participation stats mailed to participants |
 | **Transcript export** | TXT or JSON |
 
 ---
@@ -111,6 +115,10 @@ Everything lives in `backend/.env` (see `.env.example`).
 | `LIVEKIT_URL` / `_API_KEY` / `_API_SECRET` | for video | free tier at [cloud.livekit.io](https://cloud.livekit.io/) |
 | `GROQ_API_KEY` | for AI | free key at [console.groq.com](https://console.groq.com/keys) |
 | `GOOGLE_CLIENT_ID` / `_SECRET` | for calendar | Google Cloud Console |
+| `SMTP_HOST` / `_PORT` / `_FROM` | for digests | any SMTP provider |
+| `TTS_PROVIDER` | | `browser` (no key) \| `elevenlabs` \| `murf` \| `sarvam` |
+| `SEMANTIC_SEARCH_ENABLED` | | defaults on; embeddings are local |
+| `QDRANT_URL` | | only to use a Qdrant server instead of embedded mode |
 | `ENCRYPTION_KEY` | | AES-256 field encryption (base64, 32 bytes) |
 
 ```bash
@@ -124,6 +132,88 @@ The app boots and runs with no credentials at all. Without `GROQ_API_KEY`,
 meetings still work — video, rooms, participants, transcripts you type — and
 transcription and report generation return a clear "not configured" message
 naming the key to set. Without LiveKit, everything but joining a room works.
+
+---
+
+## Ask your meetings
+
+Meeting knowledge is unsearchable by nature — the decision you need is nine
+minutes into a call from three weeks ago. This indexes every transcript and
+answers questions over them:
+
+> **"When did we agree the migration deadline?"**
+> → *Arjun said he would have the migration script ready by Friday, and the
+> schema freeze was agreed for the fifteenth.* [Platform Migration Planning]
+
+Three decisions worth calling out:
+
+**Embeddings run locally.** `fastembed` executes a quantised ONNX model
+(`bge-small-en-v1.5`, 384-d) on CPU — no API key, no per-query cost, and no
+transcript content leaving the host. Meeting transcripts are exactly the kind
+of data that should not be shipped to a third party to be indexed.
+
+**Qdrant runs embedded.** Vectors live in a local directory, so search needs no
+extra service. Setting `QDRANT_URL` switches to a real Qdrant server with no
+other change.
+
+**Chunks are windows of consecutive turns.** A lone line — *"Yes, Thursday
+morning."* — carries almost no retrievable meaning; the question it answers is
+in the turn before it. Windows of six turns overlap by three so an exchange is
+never split across a boundary.
+
+Retrieval works with no LLM key at all. Only the composed answer needs Groq,
+and when that fails the passages are still returned with the reason stated.
+
+---
+
+## Voice assistant
+
+Hold the mic during a meeting and ask a question aloud:
+
+```
+mic ──► Whisper STT ──► question
+                            │
+          live transcript ──┼──► LLM ──► answer ──► TTS ──► spoken reply
+          past meetings  ───┘
+```
+
+It is grounded twice: recent turns of the current meeting for immediate context
+("what did she just commit to?"), and semantic search over past meetings for
+history. The prompt keeps the two sources separate so the model cannot present
+last month's decision as something just said.
+
+Push-to-talk, not always-on. The button is the addressing gesture, so meeting
+audio only reaches the STT endpoint when someone deliberately asks — a system
+that streams every meeting to a third party on the chance it is addressed is a
+worse product and a worse privacy posture.
+
+TTS is provider-agnostic (`TTS_PROVIDER`): `elevenlabs`, `murf`, `sarvam`, or
+`browser`. The browser option needs no key — the client speaks the reply with
+the Web Speech API — so the feature is demonstrable with zero credentials, and
+a failed synthesis degrades to it rather than losing the answer.
+
+---
+
+## Analytics
+
+Computed from the stored transcript, so it costs nothing and works whether or
+not AI reports were generated: share of voice, turns, words per turn,
+questions, filler words, longest turn, and salient topics.
+
+Participation balance is normalised Shannon entropy over talk-time share — 1.0
+is an even split, 0.0 is one person talking — which accounts for the whole
+distribution rather than just the loudest speaker.
+
+Two measurements are deliberately conservative:
+
+- **Talk time is estimated from word count**, not from timestamp gaps. Entries
+  carry a start time but no duration, and inferring duration from the gap to
+  the next entry counts silence as speech.
+- **Interruption counts are suppressed when timestamps are degenerate.** If
+  transcript entries share near-identical offsets — a burst flush after a
+  reconnect, say — every speaker change looks like an interruption. The API
+  reports `timing_reliable: false` and the UI explains why the number is
+  missing, rather than showing a figure that means nothing.
 
 ---
 
@@ -144,11 +234,17 @@ backend/
     transcription_service.py  audio buffering → Groq Whisper
     ai_analysis_service.py    prompts, action detection, reports
     calendar_service.py   Google Calendar OAuth2
+    search_service.py     chunking, local embeddings, Qdrant retrieval
+    assistant_service.py  in-meeting voice Q&A, grounded twice
+    analytics_service.py  participation statistics
+    tts_service.py        provider-agnostic speech synthesis
+    email_service.py      HTML digest over SMTP
   routers/
     auth_routes.py        register / login / refresh / me
     meeting_routes.py     CRUD, join, start, end, report, WS transcription
     transcript_routes.py  fetch + export
     calendar_routes.py    OAuth2 flow + event creation
+    insight_routes.py     analytics, search, assistant, digests
 
 frontend/src/
   index.css               design tokens + component styles
@@ -196,8 +292,15 @@ GET    /meetings/                         POST   /meetings/{id}/actions/{aid}/re
 
 GET    /transcripts/{id}                  GET    /calendar/connect
 GET    /transcripts/{id}/export           GET    /calendar/status
-                                          POST   /calendar/events
+POST   /transcripts/{id}/entry            POST   /calendar/events
 GET    /health                            POST   /calendar/confirm-action
+
+POST   /insights/search                   GET    /insights/{id}/analytics
+POST   /insights/ask                      POST   /insights/{id}/digest
+POST   /insights/{id}/index               POST   /insights/{id}/assistant/ask
+POST   /insights/reindex-all              POST   /insights/{id}/assistant/listen
+GET    /insights/search/status            GET    /insights/assistant/status
+GET    /insights/email/status
 ```
 
 Full OpenAPI at `/docs`.

@@ -106,3 +106,32 @@ export const calendarApi = {
         timezone?: string
     }) => api.post('/calendar/confirm-action', data),
 }
+
+// ── Insights: analytics, semantic search, assistant, digests ──────────
+export const insightApi = {
+    analytics: (meetingId: string) => api.get(`/insights/${meetingId}/analytics`),
+
+    search: (query: string, limit = 6) =>
+        api.post('/insights/search', { query, limit }),
+    ask: (query: string, limit = 6) =>
+        api.post('/insights/ask', { query, limit }),
+    index: (meetingId: string) => api.post(`/insights/${meetingId}/index`),
+    reindexAll: () => api.post('/insights/reindex-all'),
+    searchStatus: () => api.get('/insights/search/status'),
+
+    assistantStatus: () => api.get('/insights/assistant/status'),
+    assistantAsk: (meetingId: string, question: string, speak = true) =>
+        api.post(`/insights/${meetingId}/assistant/ask`, { question, speak }),
+    assistantListen: (meetingId: string, audio: Blob, speak = true) => {
+        const body = new FormData()
+        // The filename matters: Groq's Whisper endpoint infers the container
+        // from the extension, and rejects the upload without one.
+        body.append('audio', audio, 'question.webm')
+        body.append('speak', String(speak))
+        return api.post(`/insights/${meetingId}/assistant/listen`, body)
+    },
+
+    emailStatus: () => api.get('/insights/email/status'),
+    sendDigest: (meetingId: string, includeAnalytics = true) =>
+        api.post(`/insights/${meetingId}/digest`, { include_analytics: includeAnalytics }),
+}

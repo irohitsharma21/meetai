@@ -76,6 +76,54 @@ class Settings(BaseSettings):
         "https://www.googleapis.com/auth/userinfo.email",
     ]
 
+    # ── Email digests (optional) ──────────────────────────────────────────────
+    # Any SMTP provider works: Gmail app password, SendGrid, Mailgun, Postmark,
+    # or a local MailHog during development.
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 587
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_FROM: str = ""
+    SMTP_USE_TLS: bool = True   # STARTTLS on 587/25
+    SMTP_USE_SSL: bool = False  # implicit TLS, typically port 465
+    APP_PUBLIC_URL: str = "http://localhost:5173"
+
+    @property
+    def email_configured(self) -> bool:
+        return bool(self.SMTP_HOST and self.SMTP_FROM)
+
+    # ── Semantic search (optional) ────────────────────────────────────────────
+    # Embeddings run locally through fastembed (ONNX, no API key, ~50 MB) and
+    # are stored in an embedded Qdrant collection, so search needs no external
+    # service. Disable to skip the model download entirely.
+    SEMANTIC_SEARCH_ENABLED: bool = True
+    EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
+    QDRANT_PATH: str = "./data/qdrant"
+    QDRANT_URL: str = ""  # set to use a Qdrant server instead of embedded mode
+    QDRANT_COLLECTION: str = "meeting_transcripts"
+
+    # ── Voice agent (optional) ────────────────────────────────────────────────
+    # elevenlabs | murf | sarvam | browser
+    # "browser" needs no key: the client speaks the reply with the Web Speech
+    # API, so the agent is demonstrable with zero credentials.
+    TTS_PROVIDER: str = "browser"
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_VOICE_ID: str = "21m00Tcm4TlvDq8ikWAM"
+    MURF_API_KEY: str = ""
+    MURF_VOICE_ID: str = "en-US-natalie"
+    SARVAM_API_KEY: str = ""
+    SARVAM_SPEAKER: str = "meera"
+
+    @property
+    def tts_configured(self) -> bool:
+        return self.TTS_PROVIDER == "browser" or bool(
+            {
+                "elevenlabs": self.ELEVENLABS_API_KEY,
+                "murf": self.MURF_API_KEY,
+                "sarvam": self.SARVAM_API_KEY,
+            }.get(self.TTS_PROVIDER)
+        )
+
     # ── Storage / Encryption ──────────────────────────────────────────────────
     ENCRYPTION_KEY: str = Field(
         "", description="32-byte AES-256 key (base64-encoded) for at-rest encryption"

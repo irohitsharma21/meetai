@@ -18,7 +18,10 @@ from fastapi.responses import JSONResponse
 from core.config import settings
 from db.mongodb import lifespan
 from fastapi.exceptions import RequestValidationError
-from routers import auth_routes, meeting_routes, transcript_routes, calendar_routes
+from routers import (
+    auth_routes, calendar_routes, insight_routes,
+    meeting_routes, transcript_routes,
+)
 
 # Groq config check
 print(f"✅ Groq Configured: {settings.groq_configured}")
@@ -75,6 +78,7 @@ app.include_router(auth_routes.router)
 app.include_router(meeting_routes.router)
 app.include_router(transcript_routes.router)
 app.include_router(calendar_routes.router)
+app.include_router(insight_routes.router)
 
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health", tags=["system"])

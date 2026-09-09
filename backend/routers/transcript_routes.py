@@ -5,7 +5,7 @@ Transcript routes:
   GET  /transcripts/{meeting_id}/export – export as TXT/JSON
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 
@@ -39,13 +39,40 @@ async def add_transcript_entry(
 ):
     """Manually append a transcript entry (useful for corrections)."""
     col = get_meetings_collection()
+
+    doc = await col.find_one({"meeting_id": meeting_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    # Fill in the offset when the caller did not supply one, so analytics and
+    # the timeline still have something to work with.
+    if entry.timestamp_ms is None or entry.time == "00:00:00":
+        started = doc.get("started_at") or doc.get("timestamp")
+        elapsed_ms = 0
+        if started:
+            try:
+                if isinstance(started, str):
+                    started = datetime.fromisoformat(started)
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                delta = datetime.now(timezone.utc) - started
+                elapsed_ms = max(int(delta.total_seconds() * 1000), 0)
+            except (ValueError, TypeError):
+                elapsed_ms = 0
+
+        if entry.timestamp_ms is None:
+            entry.timestamp_ms = elapsed_ms
+        if entry.time == "00:00:00":
+            total = entry.timestamp_ms // 1000
+            entry.time = f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
     result = await col.update_one(
         {"meeting_id": meeting_id},
         {"$push": {"transcript": entry.dict()}},
     )
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="Meeting not found")
-    return {"status": "added", "entry_id": entry.id}
+    return {"status": "added", "entry_id": entry.id, "time": entry.time}
 
 
 @router.get("/{meeting_id}/export")
