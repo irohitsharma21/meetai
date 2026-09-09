@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useMeetingRoomStore, useToastStore } from '../store'
 import type { WSMessage } from '../types'
 
-const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8000'
+const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8010'
 
 export function useMeetingWebSocket(meetingId: string | null) {
     const wsRef = useRef<WebSocket | null>(null)
