@@ -118,62 +118,73 @@ export function useMeetingWebSocket(meetingId: string | null) {
 }
 
 // ── Audio capture hook ───────────────────────────────────────────────
+/**
+ * Record the microphone for transcription.
+ *
+ * `track` must be the microphone track LiveKit is already publishing, and
+ * `enabled` must be LiveKit's own view of whether the mic is on.
+ *
+ * This used to call getUserMedia itself, which opened a *second*, independent
+ * microphone stream, and gated it on a store flag that only this app's custom
+ * control bar ever set. The mute button people actually press belongs to
+ * LiveKit's control bar, which mutes LiveKit's track and knows nothing about
+ * that flag - so muting silenced the call while this stream carried on
+ * recording and sending audio away for transcription. Someone who had muted
+ * was still being transcribed.
+ *
+ * Sharing LiveKit's track makes that structurally impossible: there is one
+ * microphone, and if it is muted there is nothing to record.
+ */
 export function useAudioCapture(
     onChunk: (data: ArrayBuffer) => void,
-    enabled: boolean
+    enabled: boolean,
+    track: MediaStreamTrack | null,
 ) {
     const mediaRef = useRef<MediaRecorder | null>(null)
-    const streamRef = useRef<MediaStream | null>(null)
 
     useEffect(() => {
-        if (!enabled) {
-            mediaRef.current?.stop()
-            streamRef.current?.getTracks().forEach((t) => t.stop())
+        // No track, or the mic is off: make sure nothing is recording. The
+        // cleanup below also covers this, but being explicit means a mute
+        // stops capture immediately rather than on the next render.
+        if (!enabled || !track) {
+            if (mediaRef.current && mediaRef.current.state !== 'inactive') {
+                mediaRef.current.stop()
+            }
+            mediaRef.current = null
             return
         }
 
-        const start = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    audio: {
-                        sampleRate: 16000,
-                        channelCount: 1,
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                    },
-                })
-                streamRef.current = stream
-
-                const recorder = new MediaRecorder(stream, {
-                    mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-                        ? 'audio/webm;codecs=opus'
-                        : 'audio/webm',
-                })
-
-                recorder.ondataavailable = async (e) => {
-                    if (e.data.size > 0) {
-                        const buf = await e.data.arrayBuffer()
-                        onChunk(buf)
-                    }
-                }
-
-                // Emit chunks every 1.5 seconds
-                recorder.start(1500)
-                mediaRef.current = recorder
-            } catch (err) {
-                console.error('Audio capture failed:', err)
-                useToastStore.getState().addToast({
-                    type: 'error',
-                    title: 'Microphone Error',
-                    message: 'Could not access your microphone. Please check browser permissions.'
-                })
-            }
+        let recorder: MediaRecorder
+        try {
+            // A new MediaStream wrapping LiveKit's track - not a new capture.
+            // Stopping this recorder never stops LiveKit's own publication.
+            recorder = new MediaRecorder(new MediaStream([track]), {
+                mimeType: MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                    ? 'audio/webm;codecs=opus'
+                    : 'audio/webm',
+            })
+        } catch (err) {
+            console.error('Could not record the microphone track:', err)
+            useToastStore.getState().addToast({
+                type: 'error',
+                title: 'Transcription unavailable',
+                message: 'This browser could not record the microphone for transcription.',
+            })
+            return
         }
 
-        start()
+        recorder.ondataavailable = async (e) => {
+            if (e.data.size > 0) onChunk(await e.data.arrayBuffer())
+        }
+
+        // 1.5s chunks. Deepgram's streaming endpoint keeps decoder state across
+        // the whole socket, so these can be raw WebM clusters.
+        recorder.start(1500)
+        mediaRef.current = recorder
+
         return () => {
-            mediaRef.current?.stop()
-            streamRef.current?.getTracks().forEach((t) => t.stop())
+            if (recorder.state !== 'inactive') recorder.stop()
+            mediaRef.current = null
         }
-    }, [enabled, onChunk])
+    }, [enabled, track, onChunk])
 }

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
     LiveKitRoom,
     VideoConference,
@@ -11,6 +11,7 @@ import {
     ScreenShare, ScreenShareOff,
 } from 'lucide-react'
 import { useMeetingRoomStore } from '../../store'
+import { useAudioCapture } from '../../hooks/useWebSocket'
 
 interface VideoGridProps {
     meetingId: string
@@ -22,6 +23,35 @@ interface VideoGridProps {
      * act, ending is done to the meeting.
      */
     onLeave?: () => void
+    /**
+     * Raw audio for transcription. Only ever called while LiveKit reports the
+     * microphone as enabled.
+     */
+    onAudioChunk?: (data: ArrayBuffer) => void
+}
+
+/**
+ * Feeds the transcriber from the microphone LiveKit is already publishing.
+ *
+ * Lives inside LiveKitRoom because that is the only place the local
+ * participant - and therefore the authoritative mute state - is visible. It
+ * renders nothing.
+ */
+function TranscriptionAudioBridge({ onAudioChunk }: { onAudioChunk?: (d: ArrayBuffer) => void }) {
+    const { isMicrophoneEnabled, microphoneTrack } = useLocalParticipant()
+    const setMicMuted = useMeetingRoomStore((s) => s.setMicMuted)
+
+    // Keep the rest of the app in step with LiveKit rather than with a flag
+    // only our own buttons update.
+    useEffect(() => {
+        setMicMuted(!isMicrophoneEnabled)
+    }, [isMicrophoneEnabled, setMicMuted])
+
+    const track = microphoneTrack?.track?.mediaStreamTrack ?? null
+    const send = useCallback((data: ArrayBuffer) => onAudioChunk?.(data), [onAudioChunk])
+
+    useAudioCapture(send, isMicrophoneEnabled && !!onAudioChunk, track)
+    return null
 }
 
 function RoomControls({ onEnd }: Pick<VideoGridProps, 'meetingId' | 'onEnd'>) {
@@ -91,7 +121,7 @@ function RoomControls({ onEnd }: Pick<VideoGridProps, 'meetingId' | 'onEnd'>) {
     )
 }
 
-export function VideoGrid({ meetingId, onEnd, onLeave }: VideoGridProps) {
+export function VideoGrid({ meetingId, onEnd, onLeave, onAudioChunk }: VideoGridProps) {
     const { livekitToken, livekitUrl } = useMeetingRoomStore()
 
     if (!livekitToken || !livekitUrl) {
@@ -123,6 +153,7 @@ export function VideoGrid({ meetingId, onEnd, onLeave }: VideoGridProps) {
             >
                 <VideoConference />
                 <RoomAudioRenderer />
+                <TranscriptionAudioBridge onAudioChunk={onAudioChunk} />
                 <RoomControls meetingId={meetingId} onEnd={onEnd} />
             </LiveKitRoom>
         </div>

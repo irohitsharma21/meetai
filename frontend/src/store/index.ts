@@ -65,6 +65,7 @@ interface MeetingRoomState {
     setConnected: (v: boolean) => void
     setRecording: (v: boolean) => void
     toggleMic: () => void
+    setMicMuted: (v: boolean) => void
     toggleCamera: () => void
     clearRoom: () => void
 }
@@ -104,6 +105,9 @@ export const useMeetingRoomStore = create<MeetingRoomState>((set) => ({
     setConnected: (v) => set({ isConnected: v }),
     setRecording: (v) => set({ isRecording: v }),
     toggleMic: () => set((s) => ({ isMicMuted: !s.isMicMuted })),
+    // Mirrors LiveKit's actual microphone state. A blind toggle drifts out of
+    // step the moment the mic is changed by anything other than our own button.
+    setMicMuted: (v) => set({ isMicMuted: v }),
     toggleCamera: () => set((s) => ({ isCameraOff: !s.isCameraOff })),
 
     clearRoom: () =>

@@ -7,7 +7,7 @@ import { ActionPopupSystem } from '../../components/meeting/ActionPopup'
 import { AssistantDock } from '../../components/meeting/AssistantDock'
 import { useMeetingRoomStore, useToastStore } from '../../store'
 import { meetingApi, errorMessage } from '../../lib/api'
-import { useMeetingWebSocket, useAudioCapture } from '../../hooks/useWebSocket'
+import { useMeetingWebSocket } from '../../hooks/useWebSocket'
 import type { Meeting } from '../../types'
 
 export function MeetingRoomPage() {
@@ -16,7 +16,7 @@ export function MeetingRoomPage() {
     const { addToast } = useToastStore()
     const {
         currentMeeting, setMeeting, clearRoom, livekitToken,
-        roomRole, isConnected, isMicMuted, transcriptionStatus, joinCode,
+        roomRole, isConnected, transcriptionStatus, joinCode,
     } = useMeetingRoomStore()
 
     /*
@@ -74,7 +74,9 @@ export function MeetingRoomPage() {
         sendAudio(data)
     }, [sendAudio])
 
-    useAudioCapture(handleAudioChunk, !!livekitToken && !isMicMuted)
+    // Capture happens inside VideoGrid, where LiveKit's real microphone state
+    // is visible. Doing it here meant a second, independent getUserMedia stream
+    // that kept recording after the user muted.
 
     useEffect(() => {
         if (!meetingId) return
@@ -264,6 +266,7 @@ export function MeetingRoomPage() {
                         meetingId={meetingId!}
                         onEnd={handleEndMeeting}
                         onLeave={handleLeave}
+                        onAudioChunk={handleAudioChunk}
                     />
                 </div>
 
