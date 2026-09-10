@@ -20,12 +20,28 @@ from passlib.context import CryptContext
 from core.config import settings
 
 # ── Password hashing (argon2 primary, bcrypt as deprecated fallback) ─────────
-# bcrypt on Windows has a 72-byte hard limit that causes crashes — argon2 avoids this.
-try:
-    pwd_context = CryptContext(schemes=["argon2", "bcrypt"], deprecated=["bcrypt"])
-except Exception:
-    # argon2-cffi not available — fall back to sha256_crypt which has no length limit
-    pwd_context = CryptContext(schemes=["sha256_crypt", "bcrypt"], deprecated=["bcrypt"])
+# bcrypt has a 72-byte hard limit that truncates or crashes on long passwords;
+# argon2 has neither problem, so it is preferred where its backend exists.
+#
+# The probe hash below is not defensive padding. Constructing a CryptContext
+# naming a scheme always succeeds - passlib does not resolve a backend until
+# something is actually hashed - so a deployment missing argon2-cffi used to
+# start cleanly, pass its health check, and then raise MissingBackendError on
+# the first registration, which surfaced as an opaque 500. Hashing one throwaway
+# string at import turns that into a fallback at start-up instead.
+def _usable_context() -> CryptContext:
+    try:
+        context = CryptContext(schemes=["argon2", "bcrypt"], deprecated=["bcrypt"])
+        context.hash("backend probe")
+        return context
+    except Exception as exc:
+        print(f"[auth] argon2 unavailable ({type(exc).__name__}); using sha256_crypt.")
+        # sha256_crypt is pure Python and always present, and unlike bcrypt it
+        # has no input length limit.
+        return CryptContext(schemes=["sha256_crypt", "bcrypt"], deprecated=["bcrypt"])
+
+
+pwd_context = _usable_context()
 
 # ── OAuth2 bearer scheme ──────────────────────────────────────────────────────
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")

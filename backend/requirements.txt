@@ -5,7 +5,12 @@ pymongo>=4.7.0
 pydantic>=2.7.0
 pydantic-settings>=2.3.0
 python-jose[cryptography]>=3.3.0
-passlib[bcrypt]>=1.7.4
+# argon2 as well as bcrypt: core/security.py builds its CryptContext with
+# argon2 first, and passlib resolves backends lazily - so an install without
+# argon2-cffi starts cleanly, passes its health check, and then raises
+# MissingBackendError on the first registration. Declaring the extra is what
+# makes the dependency match the code.
+passlib[argon2,bcrypt]>=1.7.4
 python-multipart>=0.0.9
 groq>=0.9.0
 livekit>=0.12.0
