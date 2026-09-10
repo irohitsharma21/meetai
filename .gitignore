@@ -2,6 +2,11 @@
 .env
 .env.*
 !.env.example
+# Vite inlines every VITE_* value into the client bundle at build time, so these
+# are readable by anyone who opens the shipped JavaScript. They are public
+# addresses, not credentials, and committing them is what makes the Vercel build
+# self-contained rather than dependent on dashboard state.
+!frontend/.env.production
 *.pem
 *.key
 credentials.json
