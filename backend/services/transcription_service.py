@@ -26,7 +26,7 @@ from typing import Dict, List, Optional
 from groq import AsyncGroq
 
 from core.config import settings
-from services.deepgram_live import DeepgramLiveSession
+from services.deepgram_live import DeepgramLiveStream
 from models.meeting_model import TranscriptEntry
 
 
@@ -441,7 +441,9 @@ class TranscriptionService:
             )
             await on_final(entry)
 
-        session = DeepgramLiveSession(speaker_id, handle)
+        # A resilient stream rather than a single socket: it survives
+        # unmuting, silences past Deepgram's 10 s timeout, and dropped sockets.
+        session = DeepgramLiveStream(speaker_id, handle)
         try:
             await session.start()
         except Exception as exc:
