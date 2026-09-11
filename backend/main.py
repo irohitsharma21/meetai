@@ -17,7 +17,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from core.config import settings
-from db.mongodb import lifespan
+from db.mongodb import backend_info, lifespan
 from services.llm_client import llm_client
 from services.transcription_service import transcription_service
 from fastapi.exceptions import RequestValidationError
@@ -93,6 +93,27 @@ app.include_router(calendar_routes.router)
 app.include_router(insight_routes.router)
 
 # ── Health check ──────────────────────────────────────────────────────────────
+def _database_status() -> dict:
+    """
+    Which store is actually serving, and whether it will survive a restart.
+
+    backend_info() was written for exactly this and never wired in. That gap
+    is how a MongoDB deploy that failed on start-up left the API running on the
+    previous SQLite build - on an ephemeral disk, wiped every time the free
+    instance slept - for a full day while this endpoint reported "healthy".
+    Every account created in that time was lost.
+    """
+    info = backend_info()
+    ephemeral = info.get("backend") == "sqlite" and settings.ENVIRONMENT == "production"
+    info["persistent"] = not ephemeral
+    if ephemeral:
+        info["warning"] = (
+            "SQLite on an ephemeral disk: every account and meeting is lost "
+            "whenever the instance restarts or sleeps."
+        )
+    return info
+
+
 @app.get("/health", tags=["system"])
 async def health_check():
     return JSONResponse(
@@ -106,6 +127,7 @@ async def health_check():
             # arrives.
             "transcription": transcription_service.status,
             "llm": llm_client.status,
+            "database": _database_status(),
         }
     )
 
