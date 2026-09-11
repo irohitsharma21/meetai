@@ -27,7 +27,7 @@ before anyone has left the call.
 |---|---|
 | **Live video** | LiveKit WebRTC SFU, room + token management server-side |
 | **Join by code** | Every meeting gets a shareable code (`abc-defg-hij`) and invite link. Anyone signed in who holds the code can join, so participants do not have to be invited by username first |
-| **Live transcription** | Audio streamed over WebSocket in 1.5 s chunks → Deepgram `nova-3`, punctuated and cased. Groq Whisper Large v3 is retained as an alternative backend |
+| **Live transcription** | Audio streamed over WebSocket in 1.5 s chunks → Deepgram `nova-3` streaming, punctuated and cased. Survives mute/unmute and silences past Deepgram's 10 s timeout; nothing is sent while muted. Groq Whisper Large v3 is retained as an alternative backend |
 | **Action detection** | Fast LLM pass over each new utterance; detects scheduling, commitments, deadlines and task assignments, with a confidence score |
 | **Minutes of Meeting** | Structured Markdown: agenda → discussion → decisions → action table → next steps |
 | **Executive summary** | ≤200 words, decision-focused |
@@ -373,7 +373,10 @@ backend/
   models/meeting_model.py all pydantic models
   services/
     livekit_service.py    room + access token management
-    transcription_service.py  audio buffering → Deepgram (or Groq Whisper)
+    transcription_service.py  provider selection; buffered path for Groq Whisper
+    deepgram_live.py      one resilient Deepgram stream per speaker: new socket per
+                          recording, idle-close before the 10 s timeout, dropped
+                          sockets replaced and primed with the WebM init segment
     llm_client.py             one LLM client, model fallback, tolerant JSON
     ai_analysis_service.py    prompts, action detection, reports
     calendar_service.py   Google Calendar OAuth2
