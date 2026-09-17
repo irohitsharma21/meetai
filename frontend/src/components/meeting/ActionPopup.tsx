@@ -1,4 +1,4 @@
-import { Bot, Check, X, Calendar, Clock, User } from 'lucide-react'
+import { Check, X, Calendar, Clock, User, Sparkles, ListChecks } from 'lucide-react'
 import { useMeetingRoomStore, useToastStore } from '../../store'
 import { meetingApi, calendarApi } from '../../lib/api'
 import type { ActionDetectionResult } from '../../types'
@@ -9,6 +9,10 @@ interface ActionPopupProps {
     meetingId: string
 }
 
+/**
+ * A detected commitment, shown as a Meet-style card in the bottom-right of
+ * the room. Newest on top; older cards tuck behind it.
+ */
 function ActionPopup({ action, index, meetingId }: ActionPopupProps) {
     const { dismissAction } = useMeetingRoomStore()
     const { addToast } = useToastStore()
@@ -30,9 +34,9 @@ function ActionPopup({ action, index, meetingId }: ActionPopupProps) {
                     action_id: actionId,
                     start_datetime: now.toISOString(),
                 })
-                addToast({ type: 'success', title: 'Action Confirmed', message: 'Event added to Google Calendar' })
+                addToast({ type: 'success', title: 'Action confirmed', message: 'Event added to Google Calendar' })
             } catch {
-                addToast({ type: 'info', title: 'Action Confirmed', message: 'Saved. Connect Google Calendar to sync events.' })
+                addToast({ type: 'info', title: 'Action confirmed', message: 'Saved. Connect Google Calendar to sync events.' })
             }
 
             dismissAction(index)
@@ -51,88 +55,74 @@ function ActionPopup({ action, index, meetingId }: ActionPopupProps) {
         dismissAction(index)
     }
 
-    const typeIcon = {
+    const typeIcon: Record<string, JSX.Element> = {
         schedule: <Calendar size={16} />,
         deadline: <Clock size={16} />,
-        task: <User size={16} />,
+        task: <ListChecks size={16} />,
         commitment: <Check size={16} />,
     }
+    const kind = action.type || 'action'
+    const confidence = Math.round(action.confidence * 100)
 
     return (
-        <div className="action-popup" style={{ bottom: `${2 + index * 0.5}rem`, right: `${2}rem`, opacity: 1 - index * 0.15, transform: `scale(${1 - index * 0.03})`, zIndex: 200 - index }}>
-            <div className="action-popup-header">
-                <div style={{
-                    width: 32, height: 32, borderRadius: '8px',
-                    background: 'var(--gradient-brand)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                }}>
-                    <Bot size={16} color="#fff" />
+        <div
+            className="action-toast"
+            role="dialog"
+            aria-label={`Detected ${kind}`}
+            style={{
+                transform: `translateY(${-index * 10}px) scale(${1 - index * 0.03})`,
+                opacity: 1 - index * 0.18,
+                zIndex: 200 - index,
+                pointerEvents: index === 0 ? 'auto' : 'none',
+            }}
+        >
+            <div className="action-toast-head">
+                <span className="action-toast-icon">{typeIcon[kind] ?? <Sparkles size={16} />}</span>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                    <div className="action-toast-kind">{kind} detected</div>
+                    <div className="action-toast-sub">{confidence}% confidence · from the transcript</div>
                 </div>
-                <div>
-                    <div style={{ fontSize: '0.8125rem', fontWeight: 700, color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                        {typeIcon[action.type as keyof typeof typeIcon] || <Bot size={14} />}
-                        AI Detected: {action.type || 'Action'}
-                    </div>
-                    <div style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                        Confidence: {Math.round(action.confidence * 100)}%
-                    </div>
-                </div>
-                <button className="btn btn-ghost btn-icon-sm" onClick={() => dismissAction(index)} style={{ marginLeft: 'auto' }}>
-                    <X size={14} />
+                <button
+                    type="button"
+                    className="btn btn-ghost btn-icon-sm"
+                    onClick={() => dismissAction(index)}
+                    aria-label="Close"
+                >
+                    <X size={16} />
                 </button>
             </div>
 
-            <div style={{ padding: '1rem 1.25rem' }}>
-                <p style={{
-                    fontSize: '0.9375rem',
-                    color: 'var(--text-primary)',
-                    lineHeight: 1.5,
-                    marginBottom: '0.75rem',
-                    fontWeight: 500,
-                }}>
-                    "{action.suggested_action}"
-                </p>
+            <div className="action-toast-body">
+                {action.suggested_action && (
+                    <p className="action-toast-quote">{action.suggested_action}</p>
+                )}
 
                 {action.next_action && (
-                    <div style={{
-                        background: 'var(--color-bg-base)',
-                        borderRadius: 'var(--radius-md)',
-                        padding: '0.625rem 0.875rem',
-                        marginBottom: '1rem',
-                        fontSize: '0.8125rem',
-                        color: 'var(--text-secondary)',
-                        display: 'flex', flexDirection: 'column', gap: '0.25rem',
-                    }}>
+                    <div className="action-toast-facts">
                         {action.next_action.assignee && (
-                            <span>👤 Assignee: <strong style={{ color: 'var(--text-primary)' }}>{action.next_action.assignee}</strong></span>
+                            <span className="badge badge-gray badge-plain"><User size={12} aria-hidden="true" /> {action.next_action.assignee}</span>
                         )}
                         {action.next_action.date && (
-                            <span>📅 Date: <strong style={{ color: 'var(--text-primary)' }}>{action.next_action.date}</strong></span>
+                            <span className="badge badge-blue badge-plain"><Calendar size={12} aria-hidden="true" /> {action.next_action.date}</span>
                         )}
                         {action.next_action.deadline && (
-                            <span>⏰ Deadline: <strong style={{ color: 'var(--color-warning)' }}>{action.next_action.deadline}</strong></span>
+                            <span className="badge badge-amber badge-plain"><Clock size={12} aria-hidden="true" /> Due {action.next_action.deadline}</span>
                         )}
                     </div>
                 )}
-
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                    <button className="btn btn-primary" style={{ flex: 1, fontSize: '0.875rem' }} onClick={handleConfirm}>
-                        <Check size={15} /> Confirm
-                    </button>
-                    <button className="btn btn-secondary" style={{ flex: 1, fontSize: '0.875rem' }} onClick={handleReject}>
-                        <X size={15} /> Dismiss
-                    </button>
-                </div>
             </div>
 
-            {/* Confidence bar */}
-            <div style={{ height: 3, background: 'var(--color-bg-base)' }}>
-                <div style={{
-                    height: '100%',
-                    width: `${action.confidence * 100}%`,
-                    background: 'var(--gradient-brand)',
-                    transition: 'width 0.5s ease',
-                }} />
+            <div className="action-toast-foot">
+                <button type="button" className="btn btn-ghost btn-sm" onClick={handleReject}>
+                    Dismiss
+                </button>
+                <button type="button" className="btn btn-primary btn-sm" onClick={handleConfirm}>
+                    <Check size={15} aria-hidden="true" /> Confirm
+                </button>
+            </div>
+
+            <div className="action-toast-track" aria-hidden="true">
+                <div className="action-toast-fill" style={{ width: `${confidence}%` }} />
             </div>
         </div>
     )

@@ -1,11 +1,11 @@
-import { CheckCircle, XCircle, Info, AlertTriangle, X } from 'lucide-react'
+import { CheckCircle2, XCircle, Info, AlertTriangle, X } from 'lucide-react'
 import { useToastStore, type Toast } from '../../store'
 
 const icons = {
-    success: <CheckCircle size={18} color="var(--color-success)" />,
-    error: <XCircle size={18} color="var(--color-danger)" />,
-    info: <Info size={18} color="var(--color-primary)" />,
-    warning: <AlertTriangle size={18} color="var(--color-warning)" />,
+    success: <CheckCircle2 size={20} color="var(--color-success)" aria-hidden="true" />,
+    error: <XCircle size={20} color="var(--color-danger)" aria-hidden="true" />,
+    info: <Info size={20} color="var(--color-primary)" aria-hidden="true" />,
+    warning: <AlertTriangle size={20} color="var(--color-warning)" aria-hidden="true" />,
 }
 
 /**
@@ -43,30 +43,34 @@ function ToastItem({ toast }: { toast: Toast }) {
     const message = renderable(toast.message)
 
     return (
-        <div className={`toast toast-${toast.type}`}>
+        <div
+            className={`toast toast-${toast.type}`}
+            role={toast.type === 'error' ? 'alert' : 'status'}
+        >
             {icons[toast.type]}
-            <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: '0.875rem', color: 'var(--text-primary)' }}>
-                    {title}
-                </div>
-                {message && (
-                    <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '0.2rem' }}>
-                        {message}
-                    </div>
-                )}
+            <div className="toast-body">
+                <div className="toast-title">{title}</div>
+                {message && <div className="toast-msg">{message}</div>}
             </div>
-            <button className="btn-ghost btn-icon-sm" onClick={() => removeToast(toast.id)} style={{ flexShrink: 0 }}>
-                <X size={14} />
+            <button
+                type="button"
+                className="btn btn-ghost btn-icon-sm"
+                onClick={() => removeToast(toast.id)}
+                aria-label="Dismiss notification"
+                style={{ flexShrink: 0, marginTop: -4, marginRight: -4 }}
+            >
+                <X size={16} />
             </button>
         </div>
     )
 }
 
+/** Bottom-left notification stack. Polite live region; errors are assertive. */
 export function ToastContainer() {
     const { toasts } = useToastStore()
 
     return (
-        <div className="toast-stack">
+        <div className="toast-stack" aria-live="polite" aria-relevant="additions">
             {toasts.map((t) => <ToastItem key={t.id} toast={t} />)}
         </div>
     )

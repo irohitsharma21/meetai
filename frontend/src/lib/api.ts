@@ -1,4 +1,5 @@
 import axios from 'axios'
+import type { MeetingSettings } from '../types'
 
 const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8010'
 
@@ -53,6 +54,8 @@ api.interceptors.response.use(
 )
 
 export default api
+// Named alias so other modules can `import { api }` without knowing the default.
+export { api }
 
 /**
  * Turn any API failure into a string safe to render.
@@ -114,6 +117,11 @@ export const meetingApi = {
         api.post('/meetings/', data),
     list: (params?: Record<string, unknown>) => api.get('/meetings/', { params }),
     get: (id: string) => api.get(`/meetings/${id}`),
+    /**
+     * Resolves for both outcomes the server treats as success: 200 with a
+     * token, and 202 with `{ status: "waiting" }` while the host has not let
+     * us in. Callers must check `res.status === 202` before reading a token.
+     */
     join: (id: string) => api.post(`/meetings/${id}/join`),
     joinByCode: (code: string) => api.post('/meetings/join-by-code', { code }),
     start: (id: string) => api.post(`/meetings/${id}/start`),
@@ -125,6 +133,25 @@ export const meetingApi = {
     rejectAction: (meetingId: string, actionId: string) =>
         api.post(`/meetings/${meetingId}/actions/${actionId}/reject`),
     delete: (id: string) => api.delete(`/meetings/${id}`),
+
+    // ── Waiting room ──
+    lobby: (id: string) => api.get(`/meetings/${id}/lobby`),
+    lobbyMe: (id: string) => api.get(`/meetings/${id}/lobby/me`),
+    admit: (id: string, username: string) =>
+        api.post(`/meetings/${id}/lobby/${encodeURIComponent(username)}/admit`),
+    deny: (id: string, username: string) =>
+        api.post(`/meetings/${id}/lobby/${encodeURIComponent(username)}/deny`),
+    admitAll: (id: string) => api.post(`/meetings/${id}/lobby/admit-all`),
+    updateSettings: (id: string, partial: Partial<MeetingSettings>) =>
+        api.patch(`/meetings/${id}/settings`, partial),
+
+    // ── Host controls (LiveKit RoomService on the server) ──
+    liveParticipants: (id: string) => api.get(`/meetings/${id}/participants/live`),
+    muteParticipant: (id: string, identity: string, kind: 'audio' | 'video') =>
+        api.post(`/meetings/${id}/participants/${encodeURIComponent(identity)}/mute`, { kind }),
+    removeParticipant: (id: string, identity: string) =>
+        api.post(`/meetings/${id}/participants/${encodeURIComponent(identity)}/remove`),
+    muteAll: (id: string) => api.post(`/meetings/${id}/mute-all`),
 }
 
 // ── Transcript endpoints ──────────────────────────────────────────────

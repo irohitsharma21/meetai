@@ -31,8 +31,8 @@ const DARK_QUERY = '(prefers-color-scheme: dark)'
 
 /** Colours for the browser UI (address bar on mobile, title bar on desktop). */
 const META_THEME_COLOR: Record<'light' | 'dark', string> = {
-    light: '#f1f4f9',
-    dark: '#08090a',
+    light: '#ffffff',
+    dark: '#202124',
 }
 
 function prefersDark(): boolean {

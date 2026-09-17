@@ -159,23 +159,23 @@ export function AssistantDock({
     }
 
     return (
-        <div className="assistant-dock">
-            <div className="action-popup-header">
-                <Sparkles size={15} color="var(--color-primary)" />
-                Assistant
+        <div className="assistant-dock" role="dialog" aria-label="Meeting assistant">
+            <div className="assistant-head">
+                <span className="action-toast-icon"><Sparkles size={16} aria-hidden="true" /></span>
+                <span>Assistant</span>
                 <button
                     className="btn btn-ghost btn-icon-sm"
                     style={{ marginLeft: 'auto' }}
                     onClick={onClose}
                     aria-label="Close assistant"
                 >
-                    <X size={14} />
+                    <X size={16} />
                 </button>
             </div>
 
-            <div className="assistant-body">
+            <div className="assistant-body" aria-live="polite">
                 {!reply && !thinking && (
-                    <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                    <div className="text-sm muted" style={{ lineHeight: 1.6 }}>
                         Hold the mic and ask about this meeting — “what did Arjun
                         commit to?” — or type it. Answers come from what has
                         actually been said, plus your past meetings.
@@ -183,8 +183,9 @@ export function AssistantDock({
                 )}
 
                 {thinking && (
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
-                        <Loader2 size={14} className="spin" /> Thinking…
+                    <div className="assistant-bubble" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <Loader2 size={14} className="spin" aria-hidden="true" />
+                        <span className="text-sm muted">Thinking…</span>
                     </div>
                 )}
 
@@ -193,7 +194,9 @@ export function AssistantDock({
                         <div className="assistant-q">
                             {reply.heard ? `“${reply.heard}”` : reply.question}
                         </div>
-                        <div className="assistant-a">{reply.answer}</div>
+                        <div className="assistant-bubble">
+                            <div className="assistant-a">{reply.answer}</div>
+                        </div>
 
                         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.625rem', flexWrap: 'wrap' }}>
                             <button
@@ -201,7 +204,7 @@ export function AssistantDock({
                                 onClick={() => speak(reply)}
                                 title="Play the answer again"
                             >
-                                <Volume2 size={13} /> Replay
+                                <Volume2 size={14} aria-hidden="true" /> Replay
                             </button>
                             {reply.used_history && (
                                 <span className="badge badge-purple">used past meetings</span>
@@ -214,7 +217,7 @@ export function AssistantDock({
                         </div>
 
                         {reply.sources && reply.sources.length > 0 && (
-                            <div style={{ marginTop: '0.5rem', fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
+                            <div className="text-xs muted" style={{ marginTop: '0.5rem' }}>
                                 From: {reply.sources.map((s) => s.meeting_title).join(', ')}
                             </div>
                         )}
@@ -222,7 +225,7 @@ export function AssistantDock({
                 )}
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.625rem 0.75rem', borderTop: '1px solid var(--color-border)' }}>
+            <div className="assistant-foot">
                 <button
                     className="mic-button"
                     data-recording={recording}
@@ -232,14 +235,16 @@ export function AssistantDock({
                     onTouchStart={(e) => { e.preventDefault(); startRecording() }}
                     onTouchEnd={(e) => { e.preventDefault(); stopRecording() }}
                     title="Hold to speak"
-                    style={{ width: 34, height: 34, flexShrink: 0 }}
+                    aria-label={recording ? 'Listening; release to send' : 'Hold to speak'}
+                    aria-pressed={recording}
+                    style={{ width: 36, height: 36, flexShrink: 0 }}
                 >
-                    <Mic size={15} />
+                    <Mic size={16} />
                 </button>
                 <input
                     className="input"
-                    style={{ fontSize: '0.8125rem' }}
-                    placeholder={recording ? 'Listening…' : 'or type a question'}
+                    placeholder={recording ? 'Listening…' : 'Type a question'}
+                    aria-label="Ask the assistant"
                     value={typed}
                     disabled={recording}
                     onChange={(e) => setTyped(e.target.value)}
@@ -251,7 +256,7 @@ export function AssistantDock({
                     disabled={!typed.trim() || thinking}
                     aria-label="Send question"
                 >
-                    <Send size={14} />
+                    <Send size={15} />
                 </button>
             </div>
         </div>

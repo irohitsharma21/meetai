@@ -53,6 +53,24 @@ export interface Participant {
     left_at?: string
 }
 
+/** Host-controlled room settings. Every field defaults on the server. */
+export interface MeetingSettings {
+    waiting_room: boolean
+    locked: boolean
+    allow_chat: boolean
+    allow_screen_share: boolean
+    allow_reactions: boolean
+}
+
+export type LobbyStatus = 'waiting' | 'admitted' | 'denied'
+
+export interface LobbyEntry {
+    username: string
+    display_name?: string
+    requested_at: string
+    status: LobbyStatus
+}
+
 export interface Meeting {
     meeting_id: string
     join_code?: string
@@ -69,6 +87,9 @@ export interface Meeting {
     ai_analysis: AIAnalysis
     recording_url?: string
     duration_seconds?: number
+    settings?: MeetingSettings
+    lobby?: LobbyEntry[]
+    banned?: string[]
 }
 
 export interface MeetingListItem {
@@ -92,6 +113,49 @@ export interface JoinMeetingResponse {
     room_name: string
     role: string
     join_code?: string
+}
+
+/** 202 body from POST /meetings/{id}/join while the host has not admitted us. */
+export interface JoinWaitingResponse {
+    status: 'waiting'
+    meeting_id: string
+    title: string
+    host: string
+    join_code?: string
+}
+
+export interface LobbyPerson {
+    username: string
+    display_name?: string
+    requested_at: string
+}
+
+export interface LobbyResponse {
+    waiting: LobbyPerson[]
+    admitted: LobbyPerson[]
+    settings: MeetingSettings
+}
+
+export interface LobbyMeResponse {
+    status: LobbyStatus | 'none'
+    title: string
+    host: string
+    locked: boolean
+    meeting_status: MeetingStatus
+}
+
+export interface LiveTrack {
+    sid: string
+    kind: 'audio' | 'video' | 'screen'
+    muted: boolean
+}
+
+export interface LiveParticipant {
+    identity: string
+    name: string
+    is_host: boolean
+    joined_at?: string
+    tracks: LiveTrack[]
 }
 
 export interface JoinByCodeResponse {
@@ -140,3 +204,7 @@ export type WSMessage =
     | { type: 'transcript'; entry: TranscriptEntry }
     | { type: 'action_detected'; result: ActionDetectionResult }
     | { type: 'error'; message: string }
+    | { type: 'lobby_update'; waiting_count: number }
+    | { type: 'settings_update'; settings: MeetingSettings }
+    | { type: 'participant_removed'; username: string }
+    | { type: 'meeting_ended' }

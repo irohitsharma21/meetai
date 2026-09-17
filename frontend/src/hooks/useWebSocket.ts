@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback } from 'react'
-import { useMeetingRoomStore, useToastStore } from '../store'
+import { useAuthStore, useMeetingRoomStore, useToastStore } from '../store'
 import type { WSMessage } from '../types'
 
 const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8010'
@@ -17,23 +17,20 @@ export function useMeetingWebSocket(meetingId: string | null) {
     const connect = useCallback(() => {
         // A reconnect scheduled just before unmount can still arrive here.
         if (!mounted.current) return
-        if (!meetingId) {
-            console.log('[WS] No meetingId, skipping connection');
-            return
-        }
+        if (!meetingId) return
         const token = localStorage.getItem('access_token')
         if (!token) {
-            console.error('[WS] No access token found');
+            console.error('[WS] No access token found')
             return
         }
 
         const url = `${WS_BASE}/meetings/${meetingId}/ws`
-        console.log(`[WS] Connecting to ${url}...`)
+        console.debug(`[WS] Connecting to ${url}`)
         const ws = new WebSocket(url)
         wsRef.current = ws
 
         ws.onopen = () => {
-            console.log('[WS] Connection established');
+            console.debug('[WS] Connection established')
             // Send identify message
             ws.send(JSON.stringify({ cmd: 'identify', token }))
             ws.send(JSON.stringify({ cmd: 'audio_config', format: 'webm', sample_rate: 16000 }))
@@ -44,7 +41,7 @@ export function useMeetingWebSocket(meetingId: string | null) {
             if (!mounted.current) return
             try {
                 const msg: WSMessage = JSON.parse(event.data)
-                console.debug('[WS] Message received:', msg.type)
+                const room = useMeetingRoomStore.getState()
 
                 switch (msg.type) {
                     case 'transcript':
@@ -71,6 +68,24 @@ export function useMeetingWebSocket(meetingId: string | null) {
                             message: msg.message
                         })
                         break
+                    case 'lobby_update':
+                        room.setLobbyWaitingCount(msg.waiting_count)
+                        break
+                    case 'settings_update':
+                        room.setMeetingSettings(msg.settings)
+                        break
+                    case 'participant_removed': {
+                        // Only the removed person leaves; everyone else just
+                        // sees them vanish from the stage via LiveKit.
+                        const me = useAuthStore.getState().user?.username
+                        if (me && msg.username === me) room.setExitReason('removed')
+                        break
+                    }
+                    case 'meeting_ended':
+                        // The host is already on the way to the report; this
+                        // is for everyone else.
+                        if (room.roomRole !== 'host') room.setExitReason('ended')
+                        break
                 }
             } catch (e) {
                 console.warn('[WS] Failed to parse message', e)
@@ -82,11 +97,11 @@ export function useMeetingWebSocket(meetingId: string | null) {
         }
 
         ws.onclose = (event) => {
-            console.log(`[WS] Connection closed (code: ${event.code}, reason: ${event.reason})`)
+            console.debug(`[WS] Connection closed (code: ${event.code}, reason: ${event.reason})`)
             if (mounted.current) {
                 useMeetingRoomStore.getState().setConnected(false)
                 if (event.code === 4001 || event.code === 4004) {
-                    console.error('[WS] Critical failure, not reconnecting');
+                    console.error('[WS] Critical failure, not reconnecting')
                     return
                 }
                 // Reconnect after 3s

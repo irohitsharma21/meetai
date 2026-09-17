@@ -71,13 +71,9 @@ export function AnalyticsPanel({ meetingId }: { meetingId: string }) {
     if (error || !data) {
         return (
             <div className="empty-state">
-                <span className="empty-state-icon"><BarChart2 size={18} /></span>
-                <div style={{ color: 'var(--text-primary)', fontWeight: 500 }}>
-                    No analytics available
-                </div>
-                <div style={{ fontSize: '0.8125rem', maxWidth: '40ch' }}>
-                    {error ?? 'This meeting has no transcript yet.'}
-                </div>
+                <span className="empty-state-icon"><BarChart2 size={20} /></span>
+                <div className="empty-title">No analytics available</div>
+                <div className="empty-text">{error ?? 'This meeting has no transcript yet.'}</div>
             </div>
         )
     }
@@ -87,24 +83,24 @@ export function AnalyticsPanel({ meetingId }: { meetingId: string }) {
             {/* Headline numbers */}
             <div className="kpi-row">
                 <div className="kpi">
-                    <div className="kpi-label"><MessageSquare size={11} /> Words</div>
+                    <div className="kpi-label"><span className="kpi-icon"><MessageSquare size={15} /></span> Words</div>
                     <div className="kpi-value">{data.total_words.toLocaleString()}</div>
                     <div className="kpi-hint">{data.total_entries} utterances</div>
                 </div>
                 <div className="kpi">
-                    <div className="kpi-label"><BarChart2 size={11} /> Speech time</div>
+                    <div className="kpi-label"><span className="kpi-icon"><BarChart2 size={15} /></span> Speech time</div>
                     <div className="kpi-value">{minutes(data.estimated_speech_seconds)}</div>
                     <div className="kpi-hint">estimated from word count</div>
                 </div>
                 <div className="kpi">
-                    <div className="kpi-label"><Scale size={11} /> Balance</div>
+                    <div className="kpi-label"><span className="kpi-icon"><Scale size={15} /></span> Balance</div>
                     <div className="kpi-value">{data.balance_index.toFixed(2)}</div>
                     <div className="kpi-hint">
                         {balanceLabel(data.balance_index, data.speakers.length)}
                     </div>
                 </div>
                 <div className="kpi">
-                    <div className="kpi-label"><MessageSquare size={11} /> Questions</div>
+                    <div className="kpi-label"><span className="kpi-icon"><MessageSquare size={15} /></span> Questions</div>
                     <div className="kpi-value">{data.question_count}</div>
                     <div className="kpi-hint">
                         {data.timing_reliable
@@ -119,8 +115,8 @@ export function AnalyticsPanel({ meetingId }: { meetingId: string }) {
                 <div className="panel-head">
                     <span className="panel-title">Share of voice</span>
                     {data.dominant_speaker && (
-                        <span style={{ fontSize: '0.6875rem', color: 'var(--text-muted)' }}>
-                            most active: {data.dominant_speaker}
+                        <span className="text-xs muted">
+                            Most active: {data.dominant_speaker}
                         </span>
                     )}
                 </div>
@@ -146,7 +142,7 @@ export function AnalyticsPanel({ meetingId }: { meetingId: string }) {
                     <div className="divider" style={{ margin: '0.875rem 0 0.625rem' }} />
 
                     <div className="table-scroll">
-                        <table className="table" style={{ fontSize: '0.75rem' }}>
+                        <table className="table" style={{ fontSize: '0.8125rem' }}>
                             <thead>
                                 <tr>
                                     <th>Speaker</th>

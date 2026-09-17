@@ -1,139 +1,113 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import {
-    ArrowLeft, FileText, CheckCircle2,
-    Clock, Users, Sparkles, Brain, Calendar,
-    TrendingUp, TrendingDown, Minus, Download, RefreshCw, BarChart3, Mail
+    ArrowLeft, FileText, CheckCircle2, Clock, Users, Sparkles, Calendar,
+    FileDown, RefreshCw, BarChart3, Mail, Printer, Smile, Frown, Meh,
+    MessageSquare, CalendarCheck, Loader2,
 } from 'lucide-react'
 import { insightApi, meetingApi, transcriptApi, errorMessage } from '../../lib/api'
 import { useToastStore } from '../../store'
 import { TranscriptPanel } from '../../components/meeting/TranscriptPanel'
 import { AnalyticsPanel } from '../../components/meeting/AnalyticsPanel'
-import type { Meeting, SentimentLabel } from '../../types'
+import { usePageTitle } from '../../components/common/usePageTitle'
+import { SectionTools } from '../../components/common/SectionTools'
+import {
+    downloadText, minutesToMarkdown, reportToMarkdown, slugify, summaryToMarkdown,
+    transcriptToJson, transcriptToText,
+} from '../../components/common/exporters'
+import type { Meeting, SentimentLabel, NextAction } from '../../types'
 import { format } from 'date-fns'
 
-function SentimentIcon({ sentiment }: { sentiment: SentimentLabel }) {
-    if (sentiment === 'positive') return <TrendingUp size={20} color="var(--color-success)" />
-    if (sentiment === 'negative') return <TrendingDown size={20} color="var(--color-danger)" />
-    return <Minus size={20} color="var(--color-warning)" />
+const SECTIONS = [
+    { id: 'summary', label: 'Summary' },
+    { id: 'minutes', label: 'Minutes' },
+    { id: 'actions', label: 'Actions' },
+    { id: 'sentiment', label: 'Sentiment' },
+    { id: 'analytics', label: 'Analytics' },
+    { id: 'transcript', label: 'Transcript' },
+] as const
+
+type SectionId = typeof SECTIONS[number]['id']
+
+const ACTION_BADGE: Record<NextAction['status'], string> = {
+    pending: 'badge-amber',
+    confirmed: 'badge-green',
+    rejected: 'badge-red',
+    cancelled: 'badge-gray',
 }
 
-function SentimentCard({ analysis }: { analysis: Meeting['ai_analysis'] }) {
-    const s = analysis.sentiment
-    if (!s) return null
+function SentimentIcon({ sentiment }: { sentiment: SentimentLabel }) {
+    if (sentiment === 'positive') return <Smile size={22} />
+    if (sentiment === 'negative') return <Frown size={22} />
+    return <Meh size={22} />
+}
 
-    const color = s.overall === 'positive' ? 'var(--color-success)'
-        : s.overall === 'negative' ? 'var(--color-danger)'
-            : 'var(--color-warning)'
+function SentimentSection({ analysis }: { analysis: Meeting['ai_analysis'] }) {
+    const s = analysis.sentiment
+    if (!s) return <div className="report-empty"><Meh size={16} /> No sentiment analysis yet. Generate the report to add one.</div>
 
     return (
-        <div className="card">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem' }}>
-                <SentimentIcon sentiment={s.overall} />
-                <div>
-                    <h4 style={{ textTransform: 'capitalize', color }}>{s.overall}</h4>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                        Confidence: {Math.round(s.confidence * 100)}%
-                    </div>
+        <div className="sentiment-strip">
+            <span className="sentiment-face" data-tone={s.overall}><SentimentIcon sentiment={s.overall} /></span>
+            <div>
+                <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.75rem', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '1rem', fontWeight: 500, textTransform: 'capitalize' }}>{s.overall}</span>
+                    <span className="text-sm muted">{Math.round(s.confidence * 100)}% confidence</span>
                 </div>
-                {/* Confidence bar */}
-                <div style={{ flex: 1, height: 6, background: 'var(--color-bg-base)', borderRadius: '999px', overflow: 'hidden' }}>
-                    <div style={{
-                        height: '100%', width: `${s.confidence * 100}%`,
-                        background: color, borderRadius: '999px',
-                        transition: 'width 1s ease',
-                    }} />
+                <div className="sentiment-meter" style={{ marginTop: '0.5rem' }} role="meter" aria-valuenow={Math.round(s.confidence * 100)} aria-valuemin={0} aria-valuemax={100} aria-label="Sentiment confidence">
+                    <i style={{ width: `${Math.round(s.confidence * 100)}%` }} />
                 </div>
+                {s.emotional_tone && (
+                    <p className="text-sm muted" style={{ marginTop: '0.5rem', fontStyle: 'italic' }}>“{s.emotional_tone}”</p>
+                )}
             </div>
-
-            {s.emotional_tone && (
-                <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginBottom: '1rem', fontStyle: 'italic' }}>
-                    "{s.emotional_tone}"
-                </p>
-            )}
-
             {s.key_shifts.length > 0 && (
-                <div>
-                    <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
-                        Key Moments
-                    </div>
-                    <ul style={{ padding: '0', listStyle: 'none', display: 'flex', flexDirection: 'column', gap: '0.375rem' }}>
-                        {s.key_shifts.map((shift, i) => (
-                            <li key={i} style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', display: 'flex', gap: '0.5rem' }}>
-                                <span style={{ color: 'var(--color-accent)', flexShrink: 0 }}>•</span>
-                                {shift}
-                            </li>
-                        ))}
-                    </ul>
-                </div>
+                <ul className="sentiment-shifts">
+                    {s.key_shifts.map((shift, i) => <li key={i}>{shift}</li>)}
+                </ul>
             )}
         </div>
     )
 }
 
-function NextActionsCard({ actions, meetingId: _meetingId }: { actions: Meeting['ai_analysis']['next_actions']; meetingId: string }) {
-    const localActions = actions
-
-    const statusColor = {
-        pending: 'var(--color-warning)',
-        confirmed: 'var(--color-success)',
-        rejected: 'var(--color-danger)',
-        cancelled: 'var(--text-muted)',
+function ActionsTable({ actions }: { actions: NextAction[] }) {
+    if (actions.length === 0) {
+        return <div className="report-empty"><CheckCircle2 size={16} /> No action items were detected in this meeting.</div>
     }
-
     return (
-        <div className="card">
-            <h3 style={{ fontSize: '1rem', marginBottom: '1rem', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <CheckCircle2 size={18} color="var(--color-success)" />
-                Action Items ({localActions.length})
-            </h3>
-            {localActions.length === 0 ? (
-                <p style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>No action items detected</p>
-            ) : (
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                    {localActions.map((action) => (
-                        <div key={action.id} style={{
-                            padding: '0.875rem',
-                            background: 'var(--color-bg-elevated)',
-                            borderRadius: 'var(--radius-md)',
-                            border: `1px solid ${statusColor[action.status] || 'var(--color-border)'}30`,
-                        }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
-                                <div style={{ fontWeight: 600, fontSize: '0.9375rem', color: 'var(--text-primary)' }}>
-                                    {action.task}
-                                </div>
-                                <span className={`badge ${action.status === 'confirmed' ? 'badge-green'
-                                    : action.status === 'rejected' ? 'badge-red'
-                                        : 'badge-amber'
-                                    }`}>{action.status}</span>
-                            </div>
-                            <div style={{ display: 'flex', gap: '1rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-                                {action.assignee && (
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                        👤 {action.assignee}
-                                    </span>
-                                )}
-                                {action.date && (
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                                        📅 {action.date}
-                                    </span>
-                                )}
-                                {action.deadline && (
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--color-warning)' }}>
-                                        ⏰ {action.deadline}
-                                    </span>
-                                )}
-                                {action.calendar_event_id && (
-                                    <span style={{ fontSize: '0.75rem', color: 'var(--color-success)' }}>
-                                        ✅ On Calendar
-                                    </span>
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-            )}
+        <div className="table-wrap">
+            <div className="table-scroll" style={{ maxHeight: 'none' }}>
+                <table className="table">
+                    <thead>
+                        <tr>
+                            <th style={{ width: '46%' }}>Task</th>
+                            <th>Owner</th>
+                            <th>Due</th>
+                            <th>Status</th>
+                            <th>Calendar</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {actions.map((a) => (
+                            <tr key={a.id} style={{ cursor: 'default' }}>
+                                <td>
+                                    <div className="cell-title">{a.task}</div>
+                                    {a.description && <div className="cell-meta">{a.description}</div>}
+                                </td>
+                                <td className="cell-dim">{a.assignee || '—'}</td>
+                                <td className="cell-dim">{a.deadline || a.date || '—'}</td>
+                                <td><span className={`badge ${ACTION_BADGE[a.status] ?? 'badge-gray'}`}>{a.status}</span></td>
+                                <td className="cell-dim">
+                                    {a.calendar_event_id
+                                        ? <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--color-success-text)' }}><CalendarCheck size={14} aria-hidden="true" /> Scheduled</span>
+                                        : '—'}
+                                </td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            </div>
         </div>
     )
 }
@@ -145,9 +119,10 @@ export function ReportPage() {
     const [isLoading, setIsLoading] = useState(true)
     const [isGenerating, setIsGenerating] = useState(false)
     const [isSendingDigest, setIsSendingDigest] = useState(false)
-    const [activeTab, setActiveTab] = useState<
-        'summary' | 'mom' | 'transcript' | 'actions' | 'analytics'
-    >('summary')
+    const [active, setActive] = useState<SectionId>('summary')
+    const docRef = useRef<HTMLDivElement>(null)
+
+    usePageTitle(meeting ? `${meeting.title} · Report` : 'Report')
 
     const loadMeeting = async () => {
         try {
@@ -163,6 +138,25 @@ export function ReportPage() {
 
     useEffect(() => { loadMeeting() }, [meetingId])
 
+    // Highlight the section under the reader in the mini table of contents.
+    useEffect(() => {
+        if (!meeting || typeof IntersectionObserver === 'undefined') return
+        const nodes = SECTIONS
+            .map((s) => document.getElementById(`section-${s.id}`))
+            .filter((n): n is HTMLElement => !!n)
+        const io = new IntersectionObserver(
+            (entries) => {
+                const hit = entries
+                    .filter((e) => e.isIntersecting)
+                    .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)[0]
+                if (hit) setActive(hit.target.id.replace('section-', '') as SectionId)
+            },
+            { rootMargin: '-96px 0px -60% 0px', threshold: 0 },
+        )
+        nodes.forEach((n) => io.observe(n))
+        return () => io.disconnect()
+    }, [meeting])
+
     const handleGenerateReport = async () => {
         try {
             setIsGenerating(true)
@@ -176,15 +170,28 @@ export function ReportPage() {
         }
     }
 
-    const handleExport = async () => {
+    /**
+     * Transcript file body. The server's export endpoint already produces
+     * both formats, so it is the source of truth; the client-side rendering
+     * of the loaded transcript is the fallback when the request fails.
+     */
+    const transcriptFile = async (fmt: 'txt' | 'json'): Promise<string> => {
         try {
-            const res = await transcriptApi.export(meetingId!, 'txt')
-            const blob = new Blob([res.data], { type: 'text/plain' })
-            const url = URL.createObjectURL(blob)
-            const a = document.createElement('a')
-            a.href = url
-            a.download = `meeting-${meetingId}.txt`
-            a.click()
+            const res = await transcriptApi.export(meetingId!, fmt)
+            return typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
+        } catch {
+            if (!meeting) throw new Error('no transcript loaded')
+            return fmt === 'json'
+                ? transcriptToJson(meetingId, meeting.transcript)
+                : transcriptToText(meeting.transcript, { title: meeting.title, date: meeting.timestamp })
+        }
+    }
+
+    const handleExportReport = () => {
+        if (!meeting) return
+        try {
+            const dateLabel = Number.isNaN(new Date(meeting.timestamp).getTime()) ? meeting.timestamp : format(new Date(meeting.timestamp), 'PPP p')
+            downloadText(`${slugify(meeting.title)}-report.md`, reportToMarkdown(meeting, { dateLabel }), 'text/markdown')
         } catch {
             addToast({ type: 'error', title: 'Export failed' })
         }
@@ -214,168 +221,167 @@ export function ReportPage() {
 
     if (isLoading) {
         return (
-            <div className="page">
-                <div className="container">
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                        {[1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 100, borderRadius: 'var(--radius-lg)' }} />)}
-                    </div>
+            <div className="report-layout" aria-busy="true">
+                <div className="report-doc" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                    <div className="skeleton" style={{ height: 36, width: '60%' }} />
+                    <div className="skeleton" style={{ height: 16, width: '40%' }} />
+                    {[1, 2, 3].map((i) => <div key={i} className="skeleton" style={{ height: 120, borderRadius: 'var(--radius-lg)' }} />)}
                 </div>
             </div>
         )
     }
 
-    if (!meeting) return null
+    if (!meeting) {
+        return (
+            <div className="empty-state">
+                <span className="empty-state-icon"><FileText size={22} /></span>
+                <div className="empty-title">Meeting not found</div>
+                <div className="empty-text">It may have been deleted, or you may not have access to it.</div>
+                <Link to="/dashboard" className="btn" style={{ marginTop: '0.5rem' }}><ArrowLeft size={16} /> Back to home</Link>
+            </div>
+        )
+    }
 
     const analysis = meeting.ai_analysis
     const hasReport = !!(analysis.summary || analysis.mom)
     const duration = meeting.duration_seconds
-        ? `${Math.floor(meeting.duration_seconds / 60)}m ${meeting.duration_seconds % 60}s`
+        ? `${Math.floor(meeting.duration_seconds / 60)} min ${meeting.duration_seconds % 60} s`
         : 'N/A'
+    const when = Number.isNaN(new Date(meeting.timestamp).getTime()) ? '—' : format(new Date(meeting.timestamp), 'PPP')
 
-    const tabs = [
-        { key: 'summary', label: 'Summary', icon: <Brain size={14} /> },
-        { key: 'mom', label: 'Minutes', icon: <FileText size={14} /> },
-        { key: 'transcript', label: 'Transcript', icon: <Users size={14} /> },
-        { key: 'actions', label: `Actions (${analysis.next_actions.length})`, icon: <CheckCircle2 size={14} /> },
-        { key: 'analytics', label: 'Analytics', icon: <BarChart3 size={14} /> },
-    ]
+    const counts: Partial<Record<SectionId, number>> = {
+        actions: analysis.next_actions.length,
+        transcript: meeting.transcript.length,
+    }
+    const slug = slugify(meeting.title)
 
     return (
-        <div className="page">
-            <div className="container">
-                {/* Back link */}
-                <Link to="/dashboard" className="btn btn-ghost btn-sm" style={{ marginBottom: '1.5rem', display: 'inline-flex' }}>
-                    <ArrowLeft size={15} /> Back to Dashboard
+        <div className="report-layout">
+            <article className="report-doc" ref={docRef}>
+                <Link to="/dashboard" className="btn btn-ghost btn-sm no-print" style={{ marginLeft: '-0.75rem', marginBottom: '1rem' }}>
+                    <ArrowLeft size={16} aria-hidden="true" /> Home
                 </Link>
 
-                {/* Meeting header */}
-                <div className="card" style={{ marginBottom: '1.5rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '1rem' }}>
-                        <div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.5rem' }}>
-                                <h1 style={{ fontSize: '1.5rem' }}>{meeting.title}</h1>
-                                <span className={`badge ${meeting.status === 'processed' ? 'badge-purple' : 'badge-gray'}`}>
-                                    {meeting.status}
-                                </span>
-                            </div>
-                            <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
-                                <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                    <Calendar size={13} />
-                                    {format(new Date(meeting.timestamp), 'PPP')}
-                                </span>
-                                <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                    <Clock size={13} /> {duration}
-                                </span>
-                                <span style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                                    <Users size={13} /> {meeting.participants.length} participants
-                                </span>
-                            </div>
-                        </div>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
-                            <button className="btn btn-secondary btn-sm" onClick={handleExport}>
-                                <Download size={14} /> Export
-                            </button>
-                            <button
-                                className="btn btn-secondary btn-sm"
-                                onClick={handleDigest}
-                                disabled={isSendingDigest}
-                                title="Email the summary and action items to participants"
-                            >
-                                {isSendingDigest
-                                    ? <RefreshCw size={14} className="spin" />
-                                    : <Mail size={14} />}
-                                Email digest
-                            </button>
-                            <button className="btn btn-primary" onClick={handleGenerateReport} disabled={isGenerating}>
-                                {isGenerating ? (
-                                    <><RefreshCw size={15} style={{ animation: 'spin 1s linear infinite' }} /> Generating…</>
-                                ) : (
-                                    <><Sparkles size={15} /> {hasReport ? 'Regenerate Report' : 'Generate AI Report'}</>
-                                )}
-                            </button>
-                        </div>
+                <header className="report-head">
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+                        <span className={`badge ${meeting.status === 'processed' ? 'badge-purple' : meeting.status === 'active' ? 'badge-green' : 'badge-gray'}`}>
+                            {meeting.status}
+                        </span>
+                        {hasReport && <span className="badge badge-blue badge-plain"><Sparkles size={12} aria-hidden="true" /> AI report</span>}
                     </div>
-                </div>
-
-                {/* Sentiment (always shown if available) */}
-                {analysis.sentiment && (
-                    <div style={{ marginBottom: '1.5rem' }}>
-                        <SentimentCard analysis={analysis} />
+                    <h1 className="report-title">{meeting.title}</h1>
+                    <div className="report-meta">
+                        <span><Calendar size={14} aria-hidden="true" /> {when}</span>
+                        <span><Clock size={14} aria-hidden="true" /> {duration}</span>
+                        <span><Users size={14} aria-hidden="true" /> {meeting.participants.length} participant{meeting.participants.length === 1 ? '' : 's'}</span>
+                        <span>Hosted by {meeting.created_by}</span>
                     </div>
-                )}
-
-                {/* Tab navigation */}
-                <div style={{ display: 'flex', gap: '0.25rem', marginBottom: '1.5rem', background: 'var(--color-bg-surface)', padding: '0.25rem', borderRadius: 'var(--radius-lg)', border: '1px solid var(--color-border)', width: 'fit-content' }}>
-                    {tabs.map((tab) => (
-                        <button
-                            key={tab.key}
-                            className={`btn btn-sm ${activeTab === tab.key ? 'btn-primary' : 'btn-ghost'}`}
-                            onClick={() => setActiveTab(tab.key as typeof activeTab)}
-                            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}
-                        >
-                            {tab.icon} {tab.label}
+                    {meeting.description && (
+                        <p className="report-prose" style={{ marginTop: '0.75rem' }}>{meeting.description}</p>
+                    )}
+                    <div className="report-toolbar no-print">
+                        <button className="btn btn-primary" onClick={handleGenerateReport} disabled={isGenerating}>
+                            {isGenerating
+                                ? <><Loader2 size={16} className="spin" aria-hidden="true" /> Generating…</>
+                                : <><Sparkles size={16} aria-hidden="true" /> {hasReport ? 'Regenerate report' : 'Generate AI report'}</>}
                         </button>
-                    ))}
-                </div>
+                        <button className="btn" onClick={handleExportReport} title={`Download ${slug}-report.md`}>
+                            <FileDown size={16} aria-hidden="true" /> Export report
+                        </button>
+                        <button
+                            className="btn"
+                            onClick={handleDigest}
+                            disabled={isSendingDigest}
+                            title="Email the summary and action items to participants"
+                        >
+                            {isSendingDigest ? <RefreshCw size={16} className="spin" aria-hidden="true" /> : <Mail size={16} aria-hidden="true" />}
+                            Email digest
+                        </button>
+                        <button className="btn" onClick={() => window.print()}>
+                            <Printer size={16} aria-hidden="true" /> Print
+                        </button>
+                    </div>
+                </header>
 
-                {/* Tab content */}
-                {activeTab === 'analytics' && meetingId && (
-                    <AnalyticsPanel meetingId={meetingId} />
-                )}
-
-                {activeTab === 'summary' && (
-                    <div className="card animate-fadeIn">
-                        {analysis.summary ? (
-                            <>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                                    <Brain size={18} color="var(--color-purple)" />
-                                    <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Executive Summary</h3>
+                <section id="section-summary" className="report-section">
+                    <h2 className="report-h2">
+                        <Sparkles size={18} aria-hidden="true" /> Summary
+                        {analysis.summary && (
+                            <SectionTools
+                                className="no-print"
+                                label="summary"
+                                getText={() => analysis.summary}
+                                downloads={[{ label: 'Markdown', filename: `${slug}-summary.md`, getText: () => summaryToMarkdown(meeting) }]}
+                            />
+                        )}
+                    </h2>
+                    {analysis.summary ? (
+                        <div className="report-prose">
+                            <p>{analysis.summary}</p>
+                            {analysis.keywords.length > 0 && (
+                                <div className="keyword-row">
+                                    {analysis.keywords.map((k) => <span key={k} className="badge badge-gray badge-plain">{k}</span>)}
                                 </div>
-                                <p style={{ lineHeight: 1.8, fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-                                    {analysis.summary}
-                                </p>
-                                {analysis.keywords.length > 0 && (
-                                    <div style={{ marginTop: '1.5rem' }}>
-                                        <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>Keywords</div>
-                                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.375rem' }}>
-                                            {analysis.keywords.map((k) => (
-                                                <span key={k} className="badge badge-blue">{k}</span>
-                                            ))}
-                                        </div>
-                                    </div>
-                                )}
-                            </>
-                        ) : (
-                            <div className="empty-state">
-                                <Brain size={40} style={{ opacity: 0.3 }} />
-                                <p>No summary yet. Click "Generate AI Report" to create one.</p>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {activeTab === 'mom' && (
-                    <div className="card animate-fadeIn">
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                            <FileText size={18} color="var(--color-accent)" />
-                            <h3 style={{ fontSize: '1rem', fontWeight: 600 }}>Minutes of Meeting</h3>
+                            )}
                         </div>
-                        {analysis.mom ? (
-                            <div className="markdown-body">
-                                <ReactMarkdown>{analysis.mom}</ReactMarkdown>
-                            </div>
-                        ) : (
-                            <div className="empty-state">
-                                <FileText size={40} style={{ opacity: 0.3 }} />
-                                <p>No MoM yet. Click "Generate AI Report" to create one.</p>
-                            </div>
-                        )}
-                    </div>
-                )}
+                    ) : (
+                        <div className="report-empty"><Sparkles size={16} /> No summary yet. Generate the report to write one.</div>
+                    )}
+                </section>
 
-                {activeTab === 'transcript' && (
-                    <div className="card animate-fadeIn" style={{ padding: 0, overflow: 'hidden' }}>
-                        <div style={{ maxHeight: 600, overflow: 'auto' }}>
+                <section id="section-minutes" className="report-section">
+                    <h2 className="report-h2">
+                        <FileText size={18} aria-hidden="true" /> Minutes
+                        {analysis.mom && (
+                            <SectionTools
+                                className="no-print"
+                                label="minutes"
+                                getText={() => analysis.mom}
+                                downloads={[{ label: 'Markdown', filename: `${slug}-minutes.md`, getText: () => minutesToMarkdown(meeting) }]}
+                            />
+                        )}
+                    </h2>
+                    {analysis.mom ? (
+                        <div className="markdown-body">
+                            <ReactMarkdown>{analysis.mom}</ReactMarkdown>
+                        </div>
+                    ) : (
+                        <div className="report-empty"><FileText size={16} /> No minutes yet. Generate the report to write them.</div>
+                    )}
+                </section>
+
+                <section id="section-actions" className="report-section">
+                    <h2 className="report-h2"><CheckCircle2 size={18} aria-hidden="true" /> Action items <span className="muted" style={{ fontWeight: 400 }}>({analysis.next_actions.length})</span></h2>
+                    <ActionsTable actions={analysis.next_actions} />
+                </section>
+
+                <section id="section-sentiment" className="report-section">
+                    <h2 className="report-h2"><Smile size={18} aria-hidden="true" /> Sentiment</h2>
+                    <SentimentSection analysis={analysis} />
+                </section>
+
+                <section id="section-analytics" className="report-section">
+                    <h2 className="report-h2"><BarChart3 size={18} aria-hidden="true" /> Analytics</h2>
+                    {meetingId && <AnalyticsPanel meetingId={meetingId} />}
+                </section>
+
+                <section id="section-transcript" className="report-section">
+                    <h2 className="report-h2">
+                        <MessageSquare size={18} aria-hidden="true" /> Transcript <span className="muted" style={{ fontWeight: 400 }}>({meeting.transcript.length})</span>
+                        {meeting.transcript.length > 0 && (
+                            <SectionTools
+                                className="no-print"
+                                label="transcript"
+                                getText={() => transcriptToText(meeting.transcript)}
+                                downloads={[
+                                    { label: 'Plain text', filename: `${slug}-transcript.txt`, getText: () => transcriptFile('txt') },
+                                    { label: 'JSON', filename: `${slug}-transcript.json`, getText: () => transcriptFile('json') },
+                                ]}
+                            />
+                        )}
+                    </h2>
+                    <div className="panel" style={{ overflow: 'hidden' }}>
+                        <div style={{ maxHeight: 640, overflow: 'auto', display: 'flex' }}>
                             <TranscriptPanel
                                 meetingId={meetingId}
                                 entries={meeting.transcript}
@@ -383,18 +389,27 @@ export function ReportPage() {
                             />
                         </div>
                     </div>
-                )}
+                </section>
+            </article>
 
-                {activeTab === 'actions' && (
-                    <div className="animate-fadeIn">
-                        <NextActionsCard actions={analysis.next_actions} meetingId={meetingId!} />
-                    </div>
-                )}
-            </div>
-
-            <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
+            <nav className="report-toc no-print" aria-label="On this page">
+                <div className="report-toc-label">On this page</div>
+                {SECTIONS.map((s) => (
+                    <a
+                        key={s.id}
+                        href={`#section-${s.id}`}
+                        aria-current={active === s.id ? 'true' : undefined}
+                        onClick={(e) => {
+                            e.preventDefault()
+                            document.getElementById(`section-${s.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                            setActive(s.id)
+                        }}
+                    >
+                        {s.label}
+                        {counts[s.id] !== undefined && <span className="report-toc-count">{counts[s.id]}</span>}
+                    </a>
+                ))}
+            </nav>
         </div>
     )
 }

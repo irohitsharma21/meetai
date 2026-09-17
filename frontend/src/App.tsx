@@ -1,7 +1,12 @@
-import { CalendarCheck } from 'lucide-react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { Rail } from './components/common/Rail'
+import { useEffect, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom'
+import { CalendarCheck, LogOut, Search, Settings2 } from 'lucide-react'
+import { Rail, initialsOf, readCollapsed } from './components/common/Rail'
+import { ThemeToggle } from './components/common/ThemeToggle'
 import { ToastContainer } from './components/common/Toast'
+import { usePageTitle } from './components/common/usePageTitle'
+import { LandingPage } from './pages/landing/LandingPage'
 import { LoginPage, RegisterPage } from './pages/auth/AuthPages'
 import { DashboardPage } from './pages/dashboard/DashboardPage'
 import { JoinPage } from './pages/join/JoinPage'
@@ -17,28 +22,149 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
     return <>{children}</>
 }
 
+/** Signed-in visitors skip the marketing page. */
+function RootRoute() {
+    const { isAuthenticated } = useAuthStore()
+    if (isAuthenticated) return <Navigate to="/dashboard" replace />
+    return <LandingPage />
+}
+
+function FallbackRoute() {
+    const { isAuthenticated } = useAuthStore()
+    return <Navigate to={isAuthenticated ? '/dashboard' : '/'} replace />
+}
+
 /**
- * Application shell: fixed left rail, scrolling content column.
- *
- * `crumb` names the current section in the top bar so the page itself does
- * not have to repeat its own title twice.
+ * Account menu in the app bar: identity, appearance, sign out.
+ * Closes on outside click and Escape; the trigger reports its expanded state.
  */
-function Layout({ children, crumb }: { children: React.ReactNode; crumb?: string }) {
+function UserMenu() {
+    const { user, clearAuth } = useAuthStore()
+    const navigate = useNavigate()
+    const [open, setOpen] = useState(false)
+    const ref = useRef<HTMLDivElement>(null)
+
+    useEffect(() => {
+        if (!open) return
+        const onDown = (e: MouseEvent) => {
+            if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+        }
+        const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setOpen(false) }
+        document.addEventListener('mousedown', onDown)
+        document.addEventListener('keydown', onKey)
+        return () => {
+            document.removeEventListener('mousedown', onDown)
+            document.removeEventListener('keydown', onKey)
+        }
+    }, [open])
+
+    const name = user?.display_name || user?.username || 'You'
+
     return (
-        <div className="app-shell">
+        <div className="user-menu" ref={ref}>
+            <button
+                type="button"
+                className="user-menu-btn"
+                onClick={() => setOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={open}
+                aria-label={`Account: ${name}`}
+            >
+                <span className="avatar" aria-hidden="true">{initialsOf(name)}</span>
+            </button>
+
+            {open && (
+                <div className="menu" role="menu" aria-label="Account">
+                    <div className="menu-head">
+                        <span className="avatar avatar-lg" aria-hidden="true">{initialsOf(name)}</span>
+                        <div style={{ minWidth: 0 }}>
+                            <div className="menu-head-name">{name}</div>
+                            <div className="menu-head-sub">{user?.email || user?.username}</div>
+                            {user?.role && <span className="badge badge-gray badge-plain" style={{ marginTop: 4 }}>{user.role}</span>}
+                        </div>
+                    </div>
+                    <div className="menu-row">
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                            <Settings2 size={16} aria-hidden="true" /> Appearance
+                        </span>
+                        <ThemeToggle />
+                    </div>
+                    <div className="menu-sep" />
+                    <button
+                        type="button"
+                        className="menu-item"
+                        role="menuitem"
+                        onClick={() => {
+                            setOpen(false)
+                            clearAuth()
+                            navigate('/login')
+                        }}
+                    >
+                        <LogOut size={18} aria-hidden="true" /> Sign out
+                    </button>
+                </div>
+            )}
+        </div>
+    )
+}
+
+/**
+ * Top app bar: page title, global meeting search, account menu.
+ * Searching from any page lands on the dashboard with the query applied.
+ */
+function AppBar({ title }: { title?: string }) {
+    const navigate = useNavigate()
+    const location = useLocation()
+    const [term, setTerm] = useState('')
+
+    // Keep the box in step with the dashboard's own query when it is the
+    // page being shown, so the two never disagree.
+    useEffect(() => {
+        if (location.pathname === '/dashboard') {
+            setTerm(new URLSearchParams(location.search).get('q') ?? '')
+        }
+    }, [location.pathname, location.search])
+
+    const submit = (e: FormEvent) => {
+        e.preventDefault()
+        const q = term.trim()
+        navigate(q ? `/dashboard?q=${encodeURIComponent(q)}` : '/dashboard')
+    }
+
+    return (
+        <header className="appbar">
+            <div className="appbar-title">
+                <span className="appbar-title-text">{title ?? 'MeetAI'}</span>
+            </div>
+            <form className="appbar-search" role="search" onSubmit={submit}>
+                <Search size={18} aria-hidden="true" />
+                <input
+                    className="input"
+                    type="search"
+                    placeholder="Search meetings"
+                    aria-label="Search meetings"
+                    value={term}
+                    onChange={(e) => setTerm(e.target.value)}
+                />
+            </form>
+            <div className="appbar-actions">
+                <UserMenu />
+            </div>
+        </header>
+    )
+}
+
+/**
+ * Application shell: collapsible left rail, app bar, scrolling content.
+ * `title` names the page in the bar and in the browser tab.
+ */
+function Layout({ children, title }: { children: React.ReactNode; title?: string }) {
+    usePageTitle(title)
+    return (
+        <div className="app-shell" data-rail={readCollapsed() ? 'collapsed' : undefined}>
             <Rail />
             <div className="main">
-                <header className="topbar">
-                    <span className="crumb">
-                        MeetAI
-                        {crumb && (
-                            <>
-                                <span className="crumb-sep"> / </span>
-                                <span className="crumb-current">{crumb}</span>
-                            </>
-                        )}
-                    </span>
-                </header>
+                <AppBar title={title} />
                 <div className="content">{children}</div>
             </div>
         </div>
@@ -50,19 +176,33 @@ function FullscreenLayout({ children }: { children: React.ReactNode }) {
     return <>{children}</>
 }
 
+function CalendarConnected() {
+    return (
+        <div className="empty-state" style={{ minHeight: '60vh' }}>
+            <span className="empty-state-icon" style={{ background: 'var(--color-success-soft)', color: 'var(--color-success-text)' }}>
+                <CalendarCheck size={22} />
+            </span>
+            <div className="empty-title">Google Calendar connected</div>
+            <div className="empty-text">Your calendar is linked. Confirmed actions will be scheduled automatically.</div>
+            <a className="btn btn-primary" href="/dashboard" style={{ marginTop: '0.5rem' }}>Back to home</a>
+        </div>
+    )
+}
+
 export default function App() {
     return (
         <BrowserRouter>
             <ToastContainer />
             <Routes>
-                {/* Auth routes */}
+                {/* Public */}
+                <Route path="/" element={<RootRoute />} />
                 <Route path="/login" element={<LoginPage />} />
                 <Route path="/register" element={<RegisterPage />} />
 
                 {/* Protected routes */}
                 <Route path="/dashboard" element={
                     <ProtectedRoute>
-                        <Layout crumb="Overview"><DashboardPage /></Layout>
+                        <Layout title="Home"><DashboardPage /></Layout>
                     </ProtectedRoute>
                 } />
 
@@ -85,45 +225,29 @@ export default function App() {
 
                 <Route path="/meetings/:meetingId/report" element={
                     <ProtectedRoute>
-                        <Layout crumb="Report"><ReportPage /></Layout>
+                        <Layout title="Report"><ReportPage /></Layout>
                     </ProtectedRoute>
                 } />
 
                 <Route path="/ask" element={
                     <ProtectedRoute>
-                        <Layout crumb="Ask"><AskPage /></Layout>
+                        <Layout title="Ask your meetings"><AskPage /></Layout>
                     </ProtectedRoute>
                 } />
 
                 <Route path="/calendar" element={
                     <ProtectedRoute>
-                        <Layout crumb="Calendar"><CalendarPage /></Layout>
+                        <Layout title="Calendar"><CalendarPage /></Layout>
                     </ProtectedRoute>
                 } />
 
                 <Route path="/calendar/success" element={
                     <ProtectedRoute>
-                        <Layout>
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '60vh', gap: '1rem' }}>
-                                <div className="empty-state-icon" style={{
-                                    width: 52, height: 52,
-                                    color: 'var(--color-success)',
-                                    borderColor: 'rgba(63,185,80,0.3)',
-                                    background: 'rgba(63,185,80,0.1)',
-                                }}>
-                                    <CalendarCheck size={24} />
-                                </div>
-                                <h2>Google Calendar connected</h2>
-                                <p>Your calendar is now linked. AI-confirmed actions will be auto-scheduled.</p>
-                                <a className="btn btn-primary" href="/dashboard">Back to Dashboard</a>
-                            </div>
-                        </Layout>
+                        <Layout title="Calendar"><CalendarConnected /></Layout>
                     </ProtectedRoute>
                 } />
 
-                {/* Root redirect */}
-                <Route path="/" element={<Navigate to="/dashboard" replace />} />
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                <Route path="*" element={<FallbackRoute />} />
             </Routes>
         </BrowserRouter>
     )

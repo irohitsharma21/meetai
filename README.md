@@ -27,6 +27,7 @@ before anyone has left the call.
 |---|---|
 | **Live video** | LiveKit WebRTC SFU, room + token management server-side |
 | **Join by code** | Every meeting gets a shareable code (`abc-defg-hij`) and invite link. Anyone signed in who holds the code can join, so participants do not have to be invited by username first |
+| **Waiting room & host controls** | Newcomers wait until the host admits them; the host can lock the room, server-mute anyone's mic or camera, mute everyone, and remove someone for good. All enforced on the server, not just hidden in the UI |
 | **Live transcription** | Audio streamed over WebSocket in 1.5 s chunks → Deepgram `nova-3` streaming, punctuated and cased. Survives mute/unmute and silences past Deepgram's 10 s timeout; nothing is sent while muted. Groq Whisper Large v3 is retained as an alternative backend |
 | **Action detection** | Fast LLM pass over each new utterance; detects scheduling, commitments, deadlines and task assignments, with a confidence score |
 | **Minutes of Meeting** | Structured Markdown: agenda → discussion → decisions → action table → next steps |
@@ -277,6 +278,59 @@ person into a dead room.
 
 ---
 
+## Waiting room & host controls
+
+Holding a shareable code should not be the same as being in the room. By
+default every meeting has a **waiting room**: the host walks straight in, and
+everyone else asks.
+
+`POST /meetings/{id}/join` answers with what should happen next rather than
+a token-or-error:
+
+| Response | Meaning |
+|---|---|
+| `200` + LiveKit token | In. Host always; participants once admitted or when the waiting room is off |
+| `202 {"status": "waiting", ...}` | Holding in the lobby. The client polls `GET /meetings/{id}/lobby/me` every 2 s and calls `join` again once it reads `"admitted"` |
+| `403` | Declined by the host, or removed from the meeting earlier |
+| `410` | The meeting has ended |
+| `423` | The host has locked the room; nobody new gets in, admitted or not |
+
+The host sees the queue (`GET /meetings/{id}/lobby`) and admits or denies
+one person (`POST .../lobby/{username}/admit` / `deny`) or everyone at once
+(`POST .../lobby/admit-all`). Admitting a name that has not asked yet
+pre-approves them. Room policy lives in `PATCH /meetings/{id}/settings`:
+
+```
+waiting_room   true    hold newcomers until admitted
+locked         false   nobody new can join, even if admitted
+allow_chat, allow_screen_share, allow_reactions   true  (participants; host always can)
+```
+
+Controls that act on the live call go through LiveKit's server API rather
+than a polite message the client could ignore:
+
+- `GET  /meetings/{id}/participants/live` — who is actually connected, with
+  their audio / video / screen tracks and mute state
+- `POST /meetings/{id}/participants/{identity}/mute` body `{"kind": "audio"|"video"}`
+  — mutes that published track at the SFU; the person may unmute themselves
+- `POST /meetings/{id}/mute-all` — mutes every non-host microphone
+- `POST /meetings/{id}/participants/{identity}/remove` — disconnects them,
+  adds them to the meeting's `banned` list so a still-valid token or a fresh
+  `join` no longer works, and stamps `left_at` on the roster
+
+Everyone with the meeting WebSocket open hears about it as it happens:
+`lobby_update` (waiting count), `settings_update`, `participant_removed`
+and `meeting_ended`, so the host's badge and the participants' screens
+change without a refresh; polling `lobby/me` remains the source of truth for
+the person waiting. Hand-raise, reactions and chat ride the LiveKit data
+channel and participant attributes and never touch the backend.
+
+A LiveKit outage during any of these returns `502` with a message saying so,
+not a traceback. Meetings created before this feature existed carry no
+`settings`, `lobby` or `banned` fields; they read as the defaults above.
+
+---
+
 ## Ask your meetings
 
 Meeting knowledge is unsearchable by nature — the decision you need is nine
@@ -436,8 +490,15 @@ GET    /auth/me                           POST   /meetings/{id}/end
                                           POST   /meetings/{id}/generate-report
 POST   /meetings/                         POST   /meetings/{id}/actions/{aid}/confirm
 GET    /meetings/                         POST   /meetings/{id}/actions/{aid}/reject
-POST   /meetings/join-by-code
+POST   /meetings/join-by-code             DELETE /meetings/{id}
                                           WS     /meetings/{id}/ws
+
+GET    /meetings/{id}/lobby               GET    /meetings/{id}/participants/live
+GET    /meetings/{id}/lobby/me            POST   /meetings/{id}/participants/{identity}/mute
+POST   /meetings/{id}/lobby/admit-all     POST   /meetings/{id}/participants/{identity}/remove
+POST   /meetings/{id}/lobby/{user}/admit  POST   /meetings/{id}/mute-all
+POST   /meetings/{id}/lobby/{user}/deny
+PATCH  /meetings/{id}/settings
 
 GET    /transcripts/{id}                  GET    /calendar/connect
 GET    /transcripts/{id}/export           GET    /calendar/status

@@ -2,18 +2,24 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="AI-Enhanced Meeting Platform – HD video meetings with real-time transcription, AI analysis, and automated Proof of Record." />
-    <meta name="theme-color" content="#08090a" />
-    <title>MeetAI – Intelligent Meeting Platform</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="MeetAI — video meetings that write their own minutes. Live captions, host controls, AI action items and searchable transcripts." />
+    <meta name="color-scheme" content="light dark" />
+    <!-- Browser-chrome colour. One tag, rewritten per theme by the inline
+         script below and by ThemeToggle, so an explicit choice always wins
+         over the OS preference. -->
+    <meta name="theme-color" content="#ffffff" />
+    <!-- Favicon: a rounded blue tile with a camera glyph, inline so it needs no request. -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%231a73e8'/%3E%3Crect x='13' y='21' width='28' height='22' rx='6' fill='%23fff'/%3E%3Cpath d='M42 29l10-6v18l-10-6z' fill='%23fff'/%3E%3Ccircle cx='24' cy='32' r='4' fill='%231a73e8'/%3E%3C/svg%3E" />
+    <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%231a73e8'/%3E%3Crect x='13' y='21' width='28' height='22' rx='6' fill='%23fff'/%3E%3Cpath d='M42 29l10-6v18l-10-6z' fill='%23fff'/%3E%3Ccircle cx='24' cy='32' r='4' fill='%231a73e8'/%3E%3C/svg%3E" />
+    <title>MeetAI</title>
     <!--
       Stamp the saved theme on <html> before the first paint. Without this the
       document renders with the :root (light) palette for a frame and a dark-mode
       user gets a white flash on every hard navigation.
 
       Kept deliberately tiny and inline — an external file would be a render-
-      blocking round trip. The storage key and the "dark" default must match
+      blocking round trip. The storage key and the default must match
       src/components/common/ThemeToggle.tsx.
     -->
     <script>
@@ -26,7 +32,7 @@
           var dark = choice === 'dark'
             || (choice === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
           var meta = document.querySelector('meta[name="theme-color"]');
-          if (meta) meta.setAttribute('content', dark ? '#08090a' : '#f1f4f9');
+          if (meta) meta.setAttribute('content', dark ? '#202124' : '#ffffff');
         } catch (e) {
           document.documentElement.setAttribute('data-theme', 'dark');
         }
@@ -34,7 +40,7 @@
     </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="root"></div>

@@ -1,15 +1,13 @@
 import { useEffect, useRef } from 'react'
-import { MessageSquare, Download, Users, AlertTriangle } from 'lucide-react'
+import { MessageSquare, Download, AlertTriangle } from 'lucide-react'
 import { useMeetingRoomStore } from '../../store'
 import type { TranscriptEntry } from '../../types'
 
-// Speaker color palette (cycling)
 /*
  * Speaker colours are CSS variables rather than literals so they can differ
  * per theme. The pastels that read well on a dark panel are close to
- * illegible on a white one - #facc15 in particular sits around 1.7:1 against
- * a light surface - so index.css defines a darker set for light mode under
- * the same names.
+ * illegible on a white one, so index.css defines a darker set for light mode
+ * under the same names.
  */
 const SPEAKER_COLORS = [
     'var(--speaker-1)', 'var(--speaker-2)', 'var(--speaker-3)',
@@ -30,11 +28,14 @@ function TranscriptEntryItem({ entry }: { entry: TranscriptEntry }) {
     const color = getSpeakerColor(entry.speaker)
     return (
         <div className="transcript-entry">
-            <div className="transcript-speaker" style={{ color }}>
-                {entry.speaker}
+            <span className="transcript-avatar" style={{ background: color }} aria-hidden="true">
+                {entry.speaker[0]?.toUpperCase()}
+            </span>
+            <div className="transcript-line-head">
+                <span className="transcript-speaker" style={{ color }}>{entry.speaker}</span>
+                <span className="transcript-time">{entry.time}</span>
             </div>
             <div className="transcript-text">{entry.text}</div>
-            <div className="transcript-time">{entry.time}</div>
         </div>
     )
 }
@@ -74,59 +75,38 @@ export function TranscriptPanel({ meetingId, entries: externalEntries, compact }
     // Only meaningful in a live room; a saved transcript passed in via props
     // has no live status attached.
     const sttBlocked = !externalEntries && transcriptionStatus?.available === false
+    const live = !externalEntries
 
     return (
-        <div className="sidebar" style={compact ? { width: '100%', borderLeft: 'none', borderTop: '1px solid var(--color-border)' } : {}}>
-            {/* Header */}
-            <div style={{
-                padding: '0.875rem 1rem',
-                borderBottom: '1px solid var(--color-border)',
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                background: 'var(--color-bg-elevated)',
-                flexShrink: 0,
-            }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <MessageSquare size={16} color="var(--color-accent)" />
-                    <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>Live Transcript</span>
-                    <span style={{
-                        fontSize: '0.6875rem', fontWeight: 600,
-                        background: 'var(--accent-soft)',
-                        color: 'var(--accent-text)',
-                        padding: '0.1rem 0.5rem',
-                        borderRadius: '999px',
-                    }}>
-                        {entries.length}
-                    </span>
+        <div className="sidebar" style={compact ? { width: '100%', borderLeft: 'none', minHeight: 0 } : {}}>
+            <div className="transcript-head">
+                <div className="transcript-head-title">
+                    <MessageSquare size={16} color="var(--accent-text)" aria-hidden="true" />
+                    <span>{live ? 'Live transcript' : 'Transcript'}</span>
+                    <span className="transcript-count" aria-label={`${entries.length} entries`}>{entries.length}</span>
                 </div>
-                <button className="btn btn-ghost btn-icon-sm" onClick={handleExport} title="Export transcript">
-                    <Download size={14} />
+                <button
+                    className="btn btn-ghost btn-icon-sm"
+                    onClick={handleExport}
+                    title="Export transcript"
+                    aria-label="Export transcript as text"
+                    disabled={!entries.length}
+                >
+                    <Download size={16} />
                 </button>
             </div>
 
-            {/* Speaker pills */}
             {participants.length > 0 && (
-                <div style={{ padding: '0.5rem 1rem', borderBottom: '1px solid var(--color-border)', display: 'flex', flexWrap: 'wrap', gap: '0.375rem', flexShrink: 0 }}>
+                <div className="transcript-speakers" aria-label="Speakers">
                     {participants.map((p) => (
-                        <span key={p} style={{
-                            fontSize: '0.6875rem', fontWeight: 600,
-                            // color-mix rather than appending hex alpha: these
-                            // are now custom properties, and "var(--speaker-1)18"
-                            // is not a colour.
-                            background: `color-mix(in srgb, ${getSpeakerColor(p)} 12%, transparent)`,
-                            color: getSpeakerColor(p),
-                            border: `1px solid color-mix(in srgb, ${getSpeakerColor(p)} 32%, transparent)`,
-                            padding: '0.15rem 0.5rem',
-                            borderRadius: '999px',
-                            display: 'flex', alignItems: 'center', gap: '0.25rem',
-                        }}>
-                            <Users size={10} /> {p}
+                        <span key={p} className="speaker-pill">
+                            <i style={{ background: getSpeakerColor(p) }} aria-hidden="true" /> {p}
                         </span>
                     ))}
                 </div>
             )}
 
-            {/* Transcript entries */}
-            <div style={{ flex: 1, overflowY: 'auto' }}>
+            <div className="transcript-list">
                 {entries.length === 0 ? (
                     /*
                      * An empty panel has two very different causes: nobody has
@@ -136,23 +116,20 @@ export function TranscriptPanel({ meetingId, entries: externalEntries, compact }
                      */
                     sttBlocked ? (
                         <div className="empty-state">
-                            <AlertTriangle size={32} color="var(--color-warning)" style={{ opacity: 0.8 }} />
-                            <p style={{ fontSize: '0.875rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                                Transcription is unavailable
-                            </p>
-                            <p style={{ fontSize: '0.8125rem', color: 'var(--text-muted)', maxWidth: '20rem' }}>
-                                {transcriptionStatus?.reason}
-                            </p>
-                            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', maxWidth: '20rem' }}>
-                                Video, chat and the meeting record are unaffected.
-                            </p>
+                            <span className="empty-state-icon" style={{ background: 'var(--color-warning-soft)', color: 'var(--color-warning-text)' }}>
+                                <AlertTriangle size={20} />
+                            </span>
+                            <div className="empty-title">Transcription is unavailable</div>
+                            <div className="empty-text">{transcriptionStatus?.reason}</div>
+                            <div className="text-xs muted">Video, chat and the meeting record are unaffected.</div>
                         </div>
                     ) : (
                         <div className="empty-state">
-                            <MessageSquare size={32} style={{ opacity: 0.3 }} />
-                            <p style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-                                Transcript will appear here as participants speak
-                            </p>
+                            <span className="empty-state-icon"><MessageSquare size={20} /></span>
+                            <div className="empty-title">{live ? 'Listening' : 'No transcript'}</div>
+                            <div className="empty-text">
+                                {live ? 'Captions appear here as people speak.' : 'Nothing was transcribed for this meeting.'}
+                            </div>
                         </div>
                     )
                 ) : (

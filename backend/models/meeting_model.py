@@ -5,7 +5,7 @@ All models use strict typing and validation.
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 import secrets
 import uuid
@@ -120,6 +120,35 @@ class Participant(BaseModel):
     left_at: Optional[datetime] = None
 
 
+# ── Waiting room / host controls ──────────────────────────────────────────────
+class LobbyStatus(str, Enum):
+    WAITING = "waiting"
+    ADMITTED = "admitted"
+    DENIED = "denied"
+
+
+class MeetingSettings(BaseModel):
+    """
+    Host-controlled room policy.
+
+    `waiting_room` holds newcomers until the host admits them; `locked` shuts
+    the door entirely, admitted or not. The three `allow_*` flags are advisory
+    for participants (the host always can) and are enforced client-side.
+    """
+    waiting_room: bool = True
+    locked: bool = False
+    allow_chat: bool = True
+    allow_screen_share: bool = True
+    allow_reactions: bool = True
+
+
+class LobbyEntry(BaseModel):
+    username: str
+    display_name: Optional[str] = None
+    requested_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    status: LobbyStatus = LobbyStatus.WAITING
+
+
 # ── Main Meeting model ────────────────────────────────────────────────────────
 class Meeting(BaseModel):
     meeting_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
@@ -138,6 +167,12 @@ class Meeting(BaseModel):
     ai_analysis: AIAnalysis = Field(default_factory=AIAnalysis)
     recording_url: Optional[str] = None
     duration_seconds: Optional[int] = None
+    # Waiting room + host controls. Documents written before these existed
+    # lack the fields entirely, so every reader goes through .get() with the
+    # same defaults rather than trusting the key to be present.
+    settings: MeetingSettings = Field(default_factory=MeetingSettings)
+    lobby: List[LobbyEntry] = []
+    banned: List[str] = []
 
     model_config = {
         "use_enum_values": True,
@@ -159,6 +194,19 @@ class JoinMeetingResponse(BaseModel):
     room_name: str
     role: str
     join_code: Optional[str] = None
+
+
+class UpdateSettingsRequest(BaseModel):
+    """Partial PATCH body: only the fields sent are changed."""
+    waiting_room: Optional[bool] = None
+    locked: Optional[bool] = None
+    allow_chat: Optional[bool] = None
+    allow_screen_share: Optional[bool] = None
+    allow_reactions: Optional[bool] = None
+
+
+class MuteParticipantRequest(BaseModel):
+    kind: Literal["audio", "video"] = "audio"
 
 
 class JoinByCodeRequest(BaseModel):

@@ -16,8 +16,12 @@ import {
     CheckCircle2, ClipboardList, FileText, Loader2, ListTodo,
     ExternalLink, X, AlertTriangle, Clock, Users, MessageSquare, Sparkles, Radio,
 } from 'lucide-react'
-import { meetingApi, errorMessage } from '../../lib/api'
+import { meetingApi, transcriptApi, errorMessage } from '../../lib/api'
 import type { AIAnalysis, Meeting, NextAction, TranscriptEntry } from '../../types'
+import { SectionTools } from '../common/SectionTools'
+import {
+    minutesToMarkdown, slugify, summaryToMarkdown, transcriptToJson, transcriptToText,
+} from '../common/exporters'
 
 type Tab = 'summary' | 'mom' | 'actions' | 'transcript'
 type Generated = Exclude<Tab, 'transcript'>
@@ -27,6 +31,13 @@ const REPORT_TYPE: Record<Generated, string> = {
     summary: 'summary',
     mom: 'mom',
     actions: 'actions',
+}
+
+/** Stable, theme-aware colour for a speaker name. */
+function speakerColor(name: string): string {
+    let h = 0
+    for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0
+    return `var(--speaker-${(h % 6) + 1})`
 }
 
 /** Minimal Markdown rendering: the models emit headings, bullets and bold. */
@@ -59,7 +70,7 @@ function TranscriptView({ entries, live }: { entries: TranscriptEntry[]; live: b
     if (!entries.length) {
         return (
             <div className="wrapup-empty">
-                <MessageSquare size={26} style={{ opacity: 0.4 }} />
+                <span className="empty-state-icon"><MessageSquare size={20} /></span>
                 <p>{live
                     ? 'Nothing has been transcribed yet. Lines appear here as people speak.'
                     : 'No transcript was recorded for this meeting.'}</p>
@@ -70,11 +81,16 @@ function TranscriptView({ entries, live }: { entries: TranscriptEntry[]; live: b
         <div className="wrapup-transcript">
             {entries.map((e, i) => (
                 <div key={e.id ?? i} className="wrapup-line">
-                    <div className="wrapup-line-head">
-                        <span className="wrapup-speaker">{e.speaker}</span>
-                        <span className="wrapup-time">{e.time}</span>
+                    <span className="transcript-avatar" style={{ background: speakerColor(e.speaker) }} aria-hidden="true">
+                        {e.speaker[0]?.toUpperCase()}
+                    </span>
+                    <div style={{ minWidth: 0 }}>
+                        <div className="wrapup-line-head">
+                            <span className="wrapup-speaker">{e.speaker}</span>
+                            <span className="wrapup-time">{e.time}</span>
+                        </div>
+                        <div className="wrapup-line-text">{e.text}</div>
                     </div>
-                    <div className="wrapup-line-text">{e.text}</div>
                 </div>
             ))}
         </div>
@@ -85,7 +101,7 @@ function ActionList({ actions }: { actions: NextAction[] }) {
     if (!actions.length) {
         return (
             <div className="wrapup-empty">
-                <ListTodo size={26} style={{ opacity: 0.4 }} />
+                <span className="empty-state-icon"><ListTodo size={20} /></span>
                 <p>No commitments were found in this meeting.</p>
             </div>
         )
@@ -198,10 +214,65 @@ export function MeetingWrapUp({
     ]
 
     const labelFor = (t: Tab) => tabs.find((x) => x.key === t)?.label.toLowerCase() ?? 'section'
+    const slug = slugify(meeting?.title)
+
+    /** Server export where it exists; the loaded transcript otherwise. */
+    const transcriptFile = async (fmt: 'txt' | 'json'): Promise<string> => {
+        try {
+            const res = await transcriptApi.export(meetingId, fmt)
+            return typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2)
+        } catch {
+            return fmt === 'json'
+                ? transcriptToJson(meetingId, transcript)
+                : transcriptToText(transcript, { title: meeting?.title, date: meeting?.timestamp })
+        }
+    }
+
+    /** Copy / download row for the visible tab, when it has content. */
+    const tools = () => {
+        if (!meeting) return null
+        if (tab === 'transcript' && transcript.length > 0) {
+            return (
+                <div className="wrapup-tools">
+                    <SectionTools
+                        label="transcript"
+                        getText={() => transcriptToText(transcript)}
+                        downloads={[
+                            { label: 'Plain text', filename: `${slug}-transcript.txt`, getText: () => transcriptFile('txt') },
+                            { label: 'JSON', filename: `${slug}-transcript.json`, getText: () => transcriptFile('json') },
+                        ]}
+                    />
+                </div>
+            )
+        }
+        if (tab === 'summary' && analysis?.summary) {
+            return (
+                <div className="wrapup-tools">
+                    <SectionTools
+                        label="summary"
+                        getText={() => analysis.summary}
+                        downloads={[{ label: 'Markdown', filename: `${slug}-summary.md`, getText: () => summaryToMarkdown(meeting) }]}
+                    />
+                </div>
+            )
+        }
+        if (tab === 'mom' && analysis?.mom) {
+            return (
+                <div className="wrapup-tools">
+                    <SectionTools
+                        label="minutes"
+                        getText={() => analysis.mom}
+                        downloads={[{ label: 'Markdown', filename: `${slug}-minutes.md`, getText: () => minutesToMarkdown(meeting) }]}
+                    />
+                </div>
+            )
+        }
+        return null
+    }
 
     const body = () => {
         if (loadError) {
-            return <div className="wrapup-empty"><AlertTriangle size={26} color="var(--color-warning)" /><p>{loadError}</p></div>
+            return <div className="wrapup-empty"><span className="empty-state-icon" style={{ background: 'var(--color-warning-soft)', color: 'var(--color-warning-text)' }}><AlertTriangle size={20} /></span><p>{loadError}</p></div>
         }
         if (!meeting) {
             return <div className="wrapup-empty"><Loader2 size={22} className="spin" /><p>Loading the meeting…</p></div>
@@ -214,8 +285,8 @@ export function MeetingWrapUp({
         if (transcript.length === 0) {
             return (
                 <div className="wrapup-empty">
-                    <AlertTriangle size={26} style={{ opacity: 0.6 }} />
-                    <p style={{ fontWeight: 600 }}>Nothing was transcribed</p>
+                    <span className="empty-state-icon" style={{ background: 'var(--color-warning-soft)', color: 'var(--color-warning-text)' }}><AlertTriangle size={20} /></span>
+                    <p style={{ fontWeight: 500, color: 'var(--text-primary)' }}>Nothing was transcribed</p>
                     <p>
                         There is no transcript for this meeting, so there is nothing to
                         write up. Check that microphone access was granted and that
@@ -228,8 +299,8 @@ export function MeetingWrapUp({
         if (pending[tab]) {
             return (
                 <div className="wrapup-empty">
-                    <Loader2 size={22} className="spin" />
-                    <p style={{ fontWeight: 600 }}>Writing the {labelFor(tab)}…</p>
+                    <span className="empty-state-icon"><Loader2 size={20} className="spin" /></span>
+                    <p style={{ fontWeight: 500, color: 'var(--text-primary)' }}>Writing the {labelFor(tab)}…</p>
                     <p>
                         Reading {transcript.length} transcript {transcript.length === 1 ? 'entry' : 'entries'}.
                         This takes up to a minute on free models.
@@ -241,8 +312,8 @@ export function MeetingWrapUp({
         if (errors[tab] && !has(tab)) {
             return (
                 <div className="wrapup-empty">
-                    <AlertTriangle size={26} color="var(--color-warning)" />
-                    <p style={{ fontWeight: 600 }}>Could not write the {labelFor(tab)}</p>
+                    <span className="empty-state-icon" style={{ background: 'var(--color-warning-soft)', color: 'var(--color-warning-text)' }}><AlertTriangle size={20} /></span>
+                    <p style={{ fontWeight: 500, color: 'var(--text-primary)' }}>Could not write the {labelFor(tab)}</p>
                     <p>{errors[tab]}</p>
                     <button className="btn btn-secondary btn-sm" onClick={() => generate(tab as Generated)}>
                         Try again
@@ -257,7 +328,7 @@ export function MeetingWrapUp({
         if (!text) {
             return (
                 <div className="wrapup-empty">
-                    <Sparkles size={26} style={{ opacity: 0.5 }} />
+                    <span className="empty-state-icon"><Sparkles size={20} /></span>
                     <p>Nothing here yet.</p>
                     <button className="btn btn-primary btn-sm" onClick={() => generate(tab as Generated)}>
                         <Sparkles size={13} /> Write the {labelFor(tab)}
@@ -278,8 +349,8 @@ export function MeetingWrapUp({
                         </div>
                         <div className="wrapup-title">{meeting?.title ?? 'Loading…'}</div>
                     </div>
-                    <button className="btn btn-ghost btn-icon-sm" onClick={onClose} aria-label="Close">
-                        <X size={15} />
+                    <button className="btn btn-ghost btn-icon-sm" onClick={onClose} aria-label="Close" style={{ marginLeft: 'auto' }}>
+                        <X size={18} />
                     </button>
                 </div>
 
@@ -304,15 +375,16 @@ export function MeetingWrapUp({
                     ))}
                 </div>
 
-                <div className="wrapup-body">{body()}</div>
+                <div className="wrapup-body">{tools()}{body()}</div>
 
                 <div className="wrapup-foot">
-                    <button className="btn btn-secondary btn-sm" onClick={onClose}>Close</button>
+                    <span className="wrapup-note">Sections are written on demand, one model call each.</span>
+                    <button className="btn btn-ghost" onClick={onClose}>Close</button>
                     <button
-                        className="btn btn-primary btn-sm"
+                        className="btn btn-primary"
                         onClick={() => navigate(`/meetings/${meetingId}/report`)}
                     >
-                        <ExternalLink size={13} /> Full report
+                        <ExternalLink size={15} /> Full report
                     </button>
                 </div>
             </div>
