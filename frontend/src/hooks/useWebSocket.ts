@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react'
 import { useAuthStore, useMeetingRoomStore, useToastStore } from '../store'
 import type { WSMessage } from '../types'
+import { emitWsMessage } from '../lib/wsBus'
 
 const WS_BASE = import.meta.env.VITE_WS_URL || 'ws://localhost:8010'
 
@@ -42,6 +43,9 @@ export function useMeetingWebSocket(meetingId: string | null) {
             try {
                 const msg: WSMessage = JSON.parse(event.data)
                 const room = useMeetingRoomStore.getState()
+                // Feature modules (document cues, the delegate agent) listen
+                // on the bus rather than being hard-wired into this switch.
+                emitWsMessage(msg)
 
                 switch (msg.type) {
                     case 'transcript':

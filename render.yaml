@@ -64,6 +64,12 @@ services:
         sync: false
       - key: OPENROUTER_API_KEY
         sync: false
+      # LLM chain: cerebras -> gemini -> openrouter -> groq, raced with a
+      # head start (see services/llm_client.py). Any subset may be set.
+      - key: CEREBRAS_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
       - key: LIVEKIT_API_KEY
         sync: false
       - key: LIVEKIT_API_SECRET
@@ -75,6 +81,26 @@ services:
       # in memory. It fits, but it is the first thing to turn off if the
       # instance starts getting OOM-killed.
       - key: SEMANTIC_SEARCH_ENABLED
-        value: true
+        value: "true"
+
+      # Qdrant Cloud. With a server configured, briefing documents (records,
+      # chunks and original files) live there instead of on this instance's
+      # ephemeral disk, so uploads survive restarts.
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+
+      # Delegate agent email (contact cards, documents, drafted mail).
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: 587
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
 
     autoDeploy: true

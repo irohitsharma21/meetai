@@ -75,6 +75,9 @@ from services.livekit_service import (
     livekit_service,
 )
 from services.transcription_service import transcription_service
+from services.realtime import manager
+from services.briefing_service import briefing_service
+from services.agent_service import agent_service
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
 
@@ -628,6 +631,14 @@ async def delete_meeting(
     col = get_meetings_collection()
     await col.delete_one({"meeting_id": meeting_id})
 
+    # Briefing documents are private uploads tied to this meeting; they (their
+    # vectors and files on disk) go with it rather than lingering unreachable.
+    try:
+        from services.document_service import document_service
+        await document_service.delete_meeting_docs(meeting_id)
+    except Exception as exc:
+        print(f"[briefing] cleanup for deleted meeting {meeting_id} skipped: {exc}")
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Waiting room (lobby)
@@ -872,31 +883,8 @@ async def mute_all(
 # WebSocket endpoint – real-time audio transcription + action detection
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ConnectionManager:
-    """Track active WebSocket connections per meeting room."""
-
-    def __init__(self):
-        # meeting_id → list of (websocket, username)
-        self.active: dict[str, list] = {}
-
-    def connect(self, meeting_id: str, ws: WebSocket, username: str):
-        self.active.setdefault(meeting_id, []).append((ws, username))
-
-    def disconnect(self, meeting_id: str, ws: WebSocket):
-        self.active[meeting_id] = [
-            conn for conn in self.active.get(meeting_id, []) if conn[0] != ws
-        ]
-
-    async def broadcast(self, meeting_id: str, message: dict, exclude: WebSocket = None):
-        for ws, _ in self.active.get(meeting_id, []):
-            if ws != exclude:
-                try:
-                    await ws.send_json(message)
-                except Exception:
-                    pass
-
-
-manager = ConnectionManager()
+# Shared with services that push to the room on their own (document cues,
+# the delegate agent), so it lives in services.realtime.
 
 
 @router.websocket("/{meeting_id}/ws")
@@ -1000,6 +988,12 @@ async def meeting_websocket(
             )
             context = [from_dict(it) for it in (updated or {}).get("transcript", [])]
             asyncio.create_task(run_detection(entry, context))
+
+            # Private, per-owner listeners: document cues for anyone who
+            # uploaded a briefing doc, and the delegate agent for owners who
+            # address it. Both swallow their own errors.
+            asyncio.create_task(briefing_service.on_transcript(meeting_id, entry, context))
+            asyncio.create_task(agent_service.on_transcript(meeting_id, entry, context))
 
         async def sweep_idle_buffers() -> None:
             """

@@ -161,6 +161,14 @@ async def _ensure_indexes() -> None:
             IndexModel([("username", ASCENDING)], unique=True, name="idx_cal_username"),
         ])
 
+        await database.db["agent_profiles"].create_indexes([
+            IndexModel([("username", ASCENDING)], unique=True, name="idx_agent_profile_user"),
+        ])
+        await database.db["agent_actions"].create_indexes([
+            IndexModel([("id", ASCENDING)], unique=True, name="idx_agent_action_id"),
+            IndexModel([("meeting_id", ASCENDING), ("owner", ASCENDING)], name="idx_agent_action_owner"),
+        ])
+
         print(f"[db] indexes ensured ({database.backend})")
     except Exception as exc:
         print(f"[db] index creation warning: {exc}")

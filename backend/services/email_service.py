@@ -32,6 +32,16 @@ class EmailUnavailable(RuntimeError):
     """Raised when a digest is requested without SMTP configured."""
 
 
+class EmailDeliveryError(RuntimeError):
+    """The SMTP server accepted the connection but refused some recipients."""
+
+    def __init__(self, failed: dict[str, str]) -> None:
+        self.failed = failed
+        super().__init__(
+            "Delivery failed for " + ", ".join(f"{a} ({e})" for a, e in failed.items())
+        )
+
+
 @dataclass
 class Recipient:
     username: str
@@ -86,13 +96,104 @@ class EmailService:
             None, self._deliver, addressed, subject, html, text
         )
 
+    # ── generic messages ──────────────────────────────────────────────
+    async def send_message(
+        self,
+        *,
+        to: list[str],
+        subject: str,
+        text: str,
+        html: str | None = None,
+        attachments: list[tuple[str, bytes, str]] | None = None,
+        reply_to: str | None = None,
+    ) -> None:
+        """
+        Send one message to each address in `to`.
+
+        One envelope per recipient rather than a shared To: line, because the
+        callers (the delegate agent above all) send to people who may not
+        otherwise see each other's addresses - "email my card to everyone"
+        must not hand the whole room everyone else's inbox.
+
+        `attachments` are (filename, bytes, mime type). `reply_to` lets a
+        message sent from the app's own address route replies to the person
+        it was sent on behalf of.
+
+        Raises EmailUnavailable when SMTP is unconfigured or unreachable, and
+        EmailDeliveryError naming the addresses the server refused.
+        """
+        self._require()
+        addresses = [a.strip() for a in to if a and a.strip()]
+        if not addresses:
+            return
+
+        messages: list[EmailMessage] = []
+        for address in addresses:
+            message = EmailMessage()
+            message["Subject"] = subject
+            message["From"] = formataddr((settings.APP_NAME, settings.SMTP_FROM))
+            message["To"] = address
+            message["Date"] = formatdate(localtime=True)
+            if reply_to:
+                message["Reply-To"] = reply_to
+            message.set_content(text)
+            if html:
+                message.add_alternative(html, subtype="html")
+            for filename, data, mime in attachments or []:
+                maintype, _, subtype = (mime or "application/octet-stream").partition("/")
+                message.add_attachment(
+                    data,
+                    maintype=maintype or "application",
+                    subtype=subtype or "octet-stream",
+                    filename=filename,
+                )
+            messages.append(message)
+
+        outcomes = await asyncio.get_running_loop().run_in_executor(
+            None, self._transmit, messages
+        )
+        failed = {m["To"]: str(err) for m, err in outcomes if err is not None}
+        if failed:
+            raise EmailDeliveryError(failed)
+
     # ── transport ─────────────────────────────────────────────────────
     def _deliver(
         self, recipients: list[Recipient], subject: str, html: str, text: str
     ) -> dict:
-        results: list[dict] = []
-        sent = 0
+        messages: list[EmailMessage] = []
+        for r in recipients:
+            message = EmailMessage()
+            message["Subject"] = subject
+            message["From"] = formataddr((settings.APP_NAME, settings.SMTP_FROM))
+            message["To"] = formataddr((r.username, r.email))
+            message["Date"] = formatdate(localtime=True)
+            message.set_content(text)
+            message.add_alternative(html, subtype="html")
+            messages.append(message)
 
+        results: list[dict] = []
+        for r, (_, err) in zip(recipients, self._transmit(messages)):
+            if err is None:
+                results.append({"username": r.username, "email": r.email, "ok": True})
+            else:
+                results.append({
+                    "username": r.username, "email": r.email,
+                    "ok": False, "error": str(err),
+                })
+        sent = sum(1 for r in results if r["ok"])
+        return {"sent": sent, "skipped": len(recipients) - sent, "results": results}
+
+    def _transmit(
+        self, messages: list[EmailMessage]
+    ) -> list[tuple[EmailMessage, Exception | None]]:
+        """
+        Send prepared messages over one SMTP connection (blocking).
+
+        Returns each message with the exception it failed with, or None. One
+        bad address must not abandon the rest of the batch, so per-message
+        failures are collected rather than raised; only a failure to connect
+        at all is fatal.
+        """
         try:
             server = self._connect()
         except Exception as exc:
@@ -101,33 +202,20 @@ class EmailService:
                 f"{settings.SMTP_PORT} — {exc.__class__.__name__}: {exc}"
             ) from exc
 
+        outcomes: list[tuple[EmailMessage, Exception | None]] = []
         try:
-            for r in recipients:
-                message = EmailMessage()
-                message["Subject"] = subject
-                message["From"] = formataddr((settings.APP_NAME, settings.SMTP_FROM))
-                message["To"] = formataddr((r.username, r.email))
-                message["Date"] = formatdate(localtime=True)
-                message.set_content(text)
-                message.add_alternative(html, subtype="html")
-
+            for message in messages:
                 try:
                     server.send_message(message)
-                    results.append({"username": r.username, "email": r.email, "ok": True})
-                    sent += 1
+                    outcomes.append((message, None))
                 except Exception as exc:
-                    # One bad address must not abandon the rest of the batch.
-                    results.append({
-                        "username": r.username, "email": r.email,
-                        "ok": False, "error": str(exc),
-                    })
+                    outcomes.append((message, exc))
         finally:
             try:
                 server.quit()
             except Exception:
                 pass
-
-        return {"sent": sent, "skipped": len(recipients) - sent, "results": results}
+        return outcomes
 
     def _connect(self):
         host, port = settings.SMTP_HOST, settings.SMTP_PORT

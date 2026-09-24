@@ -45,7 +45,7 @@ export const useAuthStore = create<AuthState>()(
 
 // ── Meeting Room Store ────────────────────────────────────────────────
 /** Which panel the right-hand slot shows. Exactly one at a time, or none. */
-export type SidePanelKind = 'chat' | 'participants' | 'transcript' | 'assistant'
+export type SidePanelKind = 'chat' | 'participants' | 'transcript' | 'assistant' | 'briefing' | 'agent'
 
 /**
  * Why the room is being left without the user pressing anything. Set by the

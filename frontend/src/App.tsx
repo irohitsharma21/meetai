@@ -14,6 +14,7 @@ import { MeetingRoomPage } from './pages/meeting/MeetingRoomPage'
 import { ReportPage } from './pages/report/ReportPage'
 import { CalendarPage } from './pages/calendar/CalendarPage'
 import { AskPage } from './pages/ask/AskPage'
+import { AgentSettingsPage } from './features/agent'
 import { useAuthStore } from './store'
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
@@ -232,6 +233,12 @@ export default function App() {
                 <Route path="/ask" element={
                     <ProtectedRoute>
                         <Layout title="Ask your meetings"><AskPage /></Layout>
+                    </ProtectedRoute>
+                } />
+
+                <Route path="/assistant" element={
+                    <ProtectedRoute>
+                        <Layout title="My agent"><AgentSettingsPage /></Layout>
                     </ProtectedRoute>
                 } />
 

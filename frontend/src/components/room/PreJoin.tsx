@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
 import {
     createLocalAudioTrack, createLocalVideoTrack,
@@ -27,6 +27,8 @@ export interface PreJoinProps {
     joining: boolean
     onJoin: (choices: RoomChoices) => void
     onCancel: () => void
+    /** Optional content under the device pickers (e.g. the briefing upload card). */
+    extra?: ReactNode
 }
 
 const EFFECTS: BackgroundEffect[] = ['none', 'blur-light', 'blur-strong']
@@ -38,7 +40,7 @@ const EFFECTS: BackgroundEffect[] = ['none', 'blur-light', 'blur-strong']
  * published and the meeting is not joined until the button is pressed.
  * Choices persist to localStorage and are handed to the room on join.
  */
-export function PreJoin({ meeting, isHost, hostName, selfName, joining, onJoin, onCancel }: PreJoinProps) {
+export function PreJoin({ meeting, isHost, hostName, selfName, joining, onJoin, onCancel, extra }: PreJoinProps) {
     const [choices, setChoices] = useState<RoomChoices>(loadChoices)
     const update = useCallback((patch: Partial<RoomChoices>) => {
         setChoices((c) => {
@@ -326,6 +328,8 @@ export function PreJoin({ meeting, isHost, hostName, selfName, joining, onJoin, 
                             ))}
                         </div>
                     </div>
+
+                    {extra}
 
                     <div className="room-prejoin-actions">
                         <button

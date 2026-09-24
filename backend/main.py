@@ -22,14 +22,14 @@ from services.llm_client import llm_client
 from services.transcription_service import transcription_service
 from fastapi.exceptions import RequestValidationError
 from routers import (
-    auth_routes, calendar_routes, insight_routes,
-    meeting_routes, transcript_routes,
+    agent_routes, auth_routes, briefing_routes, calendar_routes,
+    insight_routes, meeting_routes, transcript_routes,
 )
 
 # Provider summary at boot. Key material is never printed - even a partial key
 # in a log is a partial key in every log aggregator downstream.
 print(f"[stt] provider={settings.STT_PROVIDER} configured={settings.stt_configured}")
-print(f"[llm] openrouter={settings.openrouter_configured} groq={settings.groq_configured}")
+print(f"[llm] chain={[p['provider'] for p in llm_client.status['chain']]}")
 
 # ── App factory ───────────────────────────────────────────────────────────────
 app = FastAPI(
@@ -91,6 +91,8 @@ app.include_router(meeting_routes.router)
 app.include_router(transcript_routes.router)
 app.include_router(calendar_routes.router)
 app.include_router(insight_routes.router)
+app.include_router(briefing_routes.router)
+app.include_router(agent_routes.router)
 
 # ── Health check ──────────────────────────────────────────────────────────────
 def _database_status() -> dict:

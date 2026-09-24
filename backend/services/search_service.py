@@ -129,13 +129,17 @@ class SearchService:
     def _load(self) -> None:
         from fastembed import TextEmbedding
         from qdrant_client import QdrantClient
-        from qdrant_client.models import Distance, VectorParams
+        from qdrant_client.models import Distance, PayloadSchemaType, VectorParams
 
         self._embedder = TextEmbedding(model_name=settings.EMBEDDING_MODEL)
         self._dim = len(next(iter(self._embedder.embed(["dimension probe"]))))
 
         if settings.QDRANT_URL:
-            self._client = QdrantClient(url=settings.QDRANT_URL)
+            self._client = QdrantClient(
+                url=settings.QDRANT_URL,
+                api_key=settings.QDRANT_API_KEY or None,
+                timeout=30,
+            )
         else:
             path = Path(settings.QDRANT_PATH).expanduser().resolve()
             path.mkdir(parents=True, exist_ok=True)
@@ -146,6 +150,16 @@ class SearchService:
             self._client.create_collection(
                 collection_name=settings.QDRANT_COLLECTION,
                 vectors_config=VectorParams(size=self._dim, distance=Distance.COSINE),
+            )
+
+        # Qdrant Cloud runs in strict mode, which rejects a filter on any field
+        # without a payload index - every search here filters on meeting_id.
+        # Creating an index that already exists is a no-op.
+        if settings.QDRANT_URL:
+            self._client.create_payload_index(
+                collection_name=settings.QDRANT_COLLECTION,
+                field_name="meeting_id",
+                field_schema=PayloadSchemaType.KEYWORD,
             )
 
         self._ready = True

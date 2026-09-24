@@ -4,6 +4,8 @@ import { LiveKitRoom, RoomAudioRenderer, useParticipants } from '@livekit/compon
 import { DisconnectReason, VideoPresets, type RoomOptions } from 'livekit-client'
 import { Video } from 'lucide-react'
 import { ActionPopupSystem } from '../../components/meeting/ActionPopup'
+import { CueOverlay, BriefingPrejoinCard } from '../../features/briefing'
+import { AgentActionToasts } from '../../features/agent'
 import { PreJoin } from '../../components/room/PreJoin'
 import { WaitingRoom, type WaitingState } from '../../components/room/WaitingRoom'
 import { RoomHeader } from '../../components/room/RoomHeader'
@@ -136,6 +138,12 @@ function RoomInner({
                     />
                     <ReactionsOverlay />
                     <CaptionsOverlay enabled={captionsOn} />
+                    <CueOverlay meetingId={meetingId} />
+                    <AgentActionToasts
+                        meetingId={meetingId}
+                        panelOpen={sidePanel === 'agent'}
+                        onOpenPanel={() => setSidePanel('agent')}
+                    />
                     {isHost && <LobbyBanner meetingId={meetingId} waitingCount={waitingCount} />}
                 </div>
 
@@ -479,6 +487,7 @@ export function MeetingRoomPage() {
                 joining={phase === 'joining'}
                 onJoin={handlePreJoin}
                 onCancel={toDashboard}
+                extra={<BriefingPrejoinCard meetingId={meetingId} />}
             />
         )
     }

@@ -2,17 +2,27 @@
 LLM access, provider-agnostic.
 
 Every AI feature in MeetAI goes through this one client: action detection,
-minutes, summaries, sentiment, RAG answer composition and the voice assistant.
-Centralising it means the model can be swapped in .env without touching a
-single prompt.
+minutes, summaries, sentiment, RAG answer composition, the voice assistant,
+briefing cues and the delegate agent. Centralising it means providers and
+models can be swapped in .env without touching a single prompt.
 
-Two things here are not incidental:
+Three things here are not incidental:
 
-*Fallback across models.* The default configuration uses OpenRouter's free
-tier, where a 429 is routine rather than exceptional - a model can be busy for
-a few seconds and fine immediately after. A single-model client would surface
-that as "AI reports are broken". This one walks a list of models and only
-gives up when every one of them refuses.
+*Several providers, raced with a head start.* Cerebras, Gemini, OpenRouter
+and Groq all speak the OpenAI chat-completions dialect, so each is just an
+endpoint, a key and a model list. Every configured provider joins an ordered
+chain (`LLM_PROVIDERS`). A request starts on the first; if that one fails, or
+simply has not answered within its head start (`LLM_HEDGE_FAST_S` for the
+live, latency-sensitive calls, `LLM_HEDGE_S` otherwise), the next provider is
+started *alongside* it and the first good answer wins. Free tiers fail in
+bursts - a 429, a 503 "high demand", a 15 s stall - and a live cue that lands
+after the conversation has moved on is worth nothing. Hedging rather than
+fanning every request out to every provider keeps the free quotas for when
+they are needed.
+
+*Fallback across models within a provider.* On free tiers a single model is
+routinely busy for a few seconds, so each provider walks its own model list
+before it counts as failed.
 
 *Tolerant JSON parsing.* Several strong free models emit their reasoning
 alongside the answer, or wrap JSON in markdown fences. The prompts ask for bare
@@ -21,9 +31,12 @@ JSON, but the parser does not assume it got it.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
-from typing import List, Optional
+import time
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional
 
 import httpx
 
@@ -90,60 +103,189 @@ def extract_json(text: str) -> dict:
     raise ValueError("no valid JSON object in model response")
 
 
+def _dedupe(models: List[str]) -> List[str]:
+    # dict.fromkeys keeps order while removing duplicates.
+    return list(dict.fromkeys(m for m in models if m))
+
+
+# A 402 (no quota / billing not set up) can be fixed from the provider's
+# dashboard while the server keeps running, so it benches a provider for a
+# while instead of for the life of the process. A 401 is a wrong key and does
+# not fix itself.
+PAYMENT_BENCH_S = 600.0
+
+
+@dataclass
+class Provider:
+    name: str
+    endpoint: str
+    key_env: str
+    headers: Callable[[], dict]
+    models: List[str]
+    fast_models: List[str]
+    # Extra request fields (e.g. reasoning effort) merged into every payload.
+    extra: dict = field(default_factory=dict)
+    disabled_reason: Optional[str] = None
+    benched_until: float = 0.0
+
+    @property
+    def usable(self) -> bool:
+        return self.disabled_reason is None and time.monotonic() >= self.benched_until
+
+    def chain(self, fast: bool) -> List[str]:
+        return _dedupe(self.fast_models + self.models) if fast else _dedupe(self.models)
+
+
+def _build_providers() -> List[Provider]:
+    s = settings
+    available: dict[str, Provider] = {}
+
+    if s.CEREBRAS_API_KEY:
+        extra = {"reasoning_effort": s.CEREBRAS_REASONING_EFFORT} if s.CEREBRAS_REASONING_EFFORT else {}
+        available["cerebras"] = Provider(
+            name="cerebras",
+            endpoint="https://api.cerebras.ai/v1/chat/completions",
+            key_env="CEREBRAS_API_KEY",
+            headers=lambda: {"Authorization": f"Bearer {settings.CEREBRAS_API_KEY}"},
+            models=[s.CEREBRAS_MODEL],
+            fast_models=[s.CEREBRAS_FAST_MODEL],
+            extra=extra,
+        )
+    if s.GEMINI_API_KEY:
+        available["gemini"] = Provider(
+            name="gemini",
+            endpoint="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+            key_env="GEMINI_API_KEY",
+            headers=lambda: {"Authorization": f"Bearer {settings.GEMINI_API_KEY}"},
+            models=list(s.GEMINI_MODELS),
+            fast_models=list(s.GEMINI_FAST_MODELS),
+        )
+    if s.OPENROUTER_API_KEY:
+        available["openrouter"] = Provider(
+            name="openrouter",
+            endpoint=f"{s.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions",
+            key_env="OPENROUTER_API_KEY",
+            headers=lambda: {
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                # OpenRouter attributes usage with these; harmless if unset.
+                "HTTP-Referer": settings.OPENROUTER_SITE_URL,
+                "X-Title": settings.OPENROUTER_APP_NAME,
+            },
+            models=[s.OPENROUTER_MODEL, *s.OPENROUTER_FALLBACK_MODELS],
+            fast_models=[s.OPENROUTER_FAST_MODEL],
+        )
+    if s.GROQ_API_KEY:
+        available["groq"] = Provider(
+            name="groq",
+            endpoint="https://api.groq.com/openai/v1/chat/completions",
+            key_env="GROQ_API_KEY",
+            headers=lambda: {"Authorization": f"Bearer {settings.GROQ_API_KEY}"},
+            models=[s.GROQ_LLM_MODEL],
+            fast_models=[s.GROQ_LLM_FAST_MODEL],
+        )
+
+    order = [p.strip().lower() for p in s.LLM_PROVIDERS.split(",") if p.strip()]
+    chain = [available[name] for name in order if name in available]
+    # A configured provider missing from LLM_PROVIDERS still counts, last.
+    chain += [p for name, p in available.items() if name not in order]
+    return chain
+
+
 class LLMClient:
-    """OpenAI-dialect chat client with an ordered model fallback."""
+    """OpenAI-dialect chat client: a hedged race across providers."""
 
     def __init__(self) -> None:
-        self._provider = "openrouter" if settings.openrouter_configured else (
-            "groq" if settings.groq_configured else None
-        )
-        # Set on a hard authentication failure so a dead key is reported once
-        # rather than retried on every request.
-        self._disabled_reason: Optional[str] = None
+        self._providers = _build_providers()
 
     # ── capability ────────────────────────────────────────────────────────────
     @property
     def available(self) -> bool:
-        return self._provider is not None and self._disabled_reason is None
+        return any(p.disabled_reason is None for p in self._providers)
+
+    def _first_usable(self) -> Optional[Provider]:
+        return next((p for p in self._providers if p.usable), None)
 
     @property
     def status(self) -> dict:
+        lead = self._first_usable()
+        if not self._providers:
+            reason = (
+                "No LLM key set. Add CEREBRAS_API_KEY, GEMINI_API_KEY or "
+                "OPENROUTER_API_KEY to backend/.env."
+            )
+        elif not self.available:
+            reason = "; ".join(p.disabled_reason for p in self._providers if p.disabled_reason)
+        else:
+            reason = None
         return {
             "available": self.available,
-            "provider": self._provider,
-            "model": self._models()[0] if self._provider else None,
-            "reason": self._disabled_reason
-            or (
-                None
-                if self._provider
-                else "No LLM key set. Add OPENROUTER_API_KEY to backend/.env."
-            ),
+            "provider": lead.name if lead else None,
+            "model": lead.chain(False)[0] if lead else None,
+            "chain": [
+                {
+                    "provider": p.name,
+                    "model": p.chain(False)[0],
+                    "fast_model": p.chain(True)[0],
+                    "state": "ok" if p.usable else ("disabled" if p.disabled_reason else "benched"),
+                    "reason": p.disabled_reason,
+                }
+                for p in self._providers
+            ],
+            "reason": reason,
         }
 
-    # ── configuration ─────────────────────────────────────────────────────────
-    def _models(self, fast: bool = False) -> List[str]:
-        if self._provider == "groq":
-            return [settings.GROQ_LLM_FAST_MODEL if fast else settings.GROQ_LLM_MODEL]
+    # ── one provider ──────────────────────────────────────────────────────────
+    async def _ask_provider(
+        self, provider: Provider, client: httpx.AsyncClient, payload_base: dict,
+        fast: bool, attempts: List[str],
+    ) -> str:
+        """Walk one provider's models; return content or raise LLMUnavailable."""
+        for model in provider.chain(fast):
+            if not provider.usable:
+                break
+            payload = {**payload_base, **provider.extra, "model": model}
+            label = f"{provider.name}/{model}"
+            try:
+                response = await client.post(
+                    provider.endpoint, headers=provider.headers(), json=payload
+                )
+            except Exception as exc:  # network-level failure
+                attempts.append(f"{label}: {type(exc).__name__}")
+                continue
 
-        primary = settings.OPENROUTER_FAST_MODEL if fast else settings.OPENROUTER_MODEL
-        chain = [primary, *settings.OPENROUTER_FALLBACK_MODELS]
-        # dict.fromkeys keeps order while removing a duplicate primary.
-        return list(dict.fromkeys(m for m in chain if m))
+            code = response.status_code
+            if code in (401, 403):
+                provider.disabled_reason = (
+                    f"The {provider.name} API key was rejected ({code}). Check "
+                    f"{provider.key_env} in backend/.env."
+                )
+                attempts.append(f"{label}: HTTP {code}")
+                break
+            if code == 402:
+                provider.benched_until = time.monotonic() + PAYMENT_BENCH_S
+                attempts.append(f"{label}: HTTP 402 (no quota - check billing)")
+                break
+            if code >= 400:
+                attempts.append(f"{label}: HTTP {code}")
+                continue
 
-    def _endpoint(self) -> str:
-        if self._provider == "groq":
-            return "https://api.groq.com/openai/v1/chat/completions"
-        return f"{settings.OPENROUTER_BASE_URL.rstrip('/')}/chat/completions"
+            try:
+                message = response.json()["choices"][0]["message"]
+                content = (message.get("content") or "").strip()
+            except Exception as exc:
+                attempts.append(f"{label}: malformed response ({type(exc).__name__})")
+                continue
 
-    def _headers(self) -> dict:
-        if self._provider == "groq":
-            return {"Authorization": f"Bearer {settings.GROQ_API_KEY}"}
-        return {
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-            # OpenRouter attributes usage with these; harmless if unset.
-            "HTTP-Referer": settings.OPENROUTER_SITE_URL,
-            "X-Title": settings.OPENROUTER_APP_NAME,
-        }
+            if not content:
+                # Some reasoning models return an empty content field and put
+                # everything in `reasoning`; treat that as usable rather than
+                # throwing the whole answer away.
+                content = (message.get("reasoning") or "").strip()
+            if content:
+                return content
+            attempts.append(f"{label}: empty response")
+
+        raise LLMUnavailable(provider.name)
 
     # ── requests ──────────────────────────────────────────────────────────────
     async def chat(
@@ -156,74 +298,69 @@ class LLMClient:
         timeout: float = 90.0,
     ) -> str:
         """
-        Ask the first model that will answer.
+        Race the provider chain with a head start per provider.
 
-        A 401 disables the client outright - a rejected key never fixes itself.
-        A 429 or a server-side error moves to the next model, because on a free
-        tier that usually means "this model is busy", not "the request is bad".
+        `timeout` bounds the whole call, not each request: a caller that asks
+        for an answer within 6 s gets one or an LLMUnavailable at 6 s.
         """
-        if self._provider is None:
+        if not self._providers:
+            raise LLMUnavailable(self.status["reason"])
+        queue = [p for p in self._providers if p.usable]
+        if not queue:
             raise LLMUnavailable(
-                "No LLM is configured. Add OPENROUTER_API_KEY to backend/.env "
-                "(free models are available at https://openrouter.ai/models)."
+                self.status["reason"]
+                or "Every LLM provider is temporarily out of quota. Try again shortly."
             )
-        if self._disabled_reason:
-            raise LLMUnavailable(self._disabled_reason)
 
-        models = self._models(fast=fast)
+        payload_base: dict = {
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if json_mode:
+            payload_base["response_format"] = {"type": "json_object"}
+
+        hedge = settings.LLM_HEDGE_FAST_S if fast else settings.LLM_HEDGE_S
         attempts: List[str] = []
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        running: set[asyncio.Task] = set()
 
         async with httpx.AsyncClient(timeout=timeout) as client:
-            for model in models:
-                payload = {
-                    "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": temperature,
-                    "max_tokens": max_tokens,
-                }
-                if json_mode:
-                    payload["response_format"] = {"type": "json_object"}
+            def launch() -> None:
+                provider = queue.pop(0)
+                running.add(asyncio.create_task(
+                    self._ask_provider(provider, client, payload_base, fast, attempts)
+                ))
 
-                try:
-                    response = await client.post(
-                        self._endpoint(), headers=self._headers(), json=payload
+            launch()
+            try:
+                while running:
+                    remaining = deadline - loop.time()
+                    if remaining <= 0:
+                        attempts.append(f"timed out after {timeout:.0f}s")
+                        break
+                    wait = min(remaining, hedge) if queue else remaining
+                    done, _ = await asyncio.wait(
+                        running, timeout=wait, return_when=asyncio.FIRST_COMPLETED
                     )
-                except Exception as exc:  # network-level failure
-                    attempts.append(f"{model}: {type(exc).__name__}")
-                    continue
-
-                if response.status_code == 401:
-                    self._disabled_reason = (
-                        f"The {self._provider} API key was rejected (401). AI "
-                        "features are off until a valid key is set in backend/.env."
-                    )
-                    raise LLMUnavailable(self._disabled_reason)
-
-                if response.status_code >= 400:
-                    attempts.append(f"{model}: HTTP {response.status_code}")
-                    continue
-
-                try:
-                    data = response.json()
-                    message = data["choices"][0]["message"]
-                    content = (message.get("content") or "").strip()
-                except Exception as exc:
-                    attempts.append(f"{model}: malformed response ({type(exc).__name__})")
-                    continue
-
-                if not content:
-                    # Some reasoning models return an empty content field and
-                    # put everything in `reasoning`; treat that as usable
-                    # rather than throwing the whole answer away.
-                    content = (message.get("reasoning") or "").strip()
-                if content:
-                    return content
-
-                attempts.append(f"{model}: empty response")
+                    for task in done:
+                        running.discard(task)
+                        if task.exception() is None:
+                            return task.result()
+                    # Start the next provider when one failed, or when the
+                    # leaders have used up their head start.
+                    if queue and (done or not running or wait == hedge):
+                        launch()
+            finally:
+                for task in running:
+                    task.cancel()
+                if running:
+                    await asyncio.gather(*running, return_exceptions=True)
 
         raise LLMUnavailable(
             "Every configured model declined the request. Tried - "
-            + "; ".join(attempts)
+            + ("; ".join(attempts) or "nothing answered in time")
         )
 
     async def chat_json(
@@ -232,6 +369,7 @@ class LLMClient:
         temperature: float = 0.1,
         fast: bool = False,
         max_tokens: int = 4096,
+        timeout: float = 90.0,
     ) -> dict:
         """Chat, then parse the reply as JSON."""
         raw = await self.chat(
@@ -240,49 +378,43 @@ class LLMClient:
             fast=fast,
             max_tokens=max_tokens,
             json_mode=True,
+            timeout=timeout,
         )
         return extract_json(raw)
 
-    async def _probe(self, model: str, timeout: float = 20.0) -> None:
-        """Single-model liveness check used by verify()."""
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(
-                self._endpoint(),
-                headers=self._headers(),
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": "ok"}],
-                    "max_tokens": 4,
-                },
-            )
-        if response.status_code == 401:
-            self._disabled_reason = (
-                f"The {self._provider} API key was rejected (401). AI features "
-                "are off until a valid key is set in backend/.env."
-            )
-            raise LLMUnavailable(self._disabled_reason)
-        response.raise_for_status()
-
     async def verify(self) -> None:
         """
-        Probe the configured key once at startup.
+        Probe each configured provider once at startup, concurrently.
 
         Same reasoning as the transcription probe: a dead key should be visible
         on /health before anyone starts a meeting, not after the first report
-        fails.
+        fails. Only the primary model of each provider is probed - the model
+        chains are exercised on real requests anyway.
         """
-        if self._provider is None:
+        async def probe(provider: Provider) -> str:
+            attempts: List[str] = []
+            one = Provider(**{**provider.__dict__, "models": provider.models[:1], "fast_models": []})
+            try:
+                async with httpx.AsyncClient(timeout=20) as client:
+                    await self._ask_provider(
+                        one, client,
+                        {"messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 16},
+                        False, attempts,
+                    )
+                return f"{provider.name}: ready ({one.models[0]})"
+            except LLMUnavailable:
+                # Carry a 401/402 verdict back onto the real provider.
+                provider.disabled_reason = one.disabled_reason
+                provider.benched_until = one.benched_until
+                return f"{provider.name}: {'; '.join(attempts) or 'no answer'}"
+            except Exception as exc:
+                return f"{provider.name}: could not verify ({type(exc).__name__})"
+
+        if not self._providers:
+            print("LLM unavailable: no provider key set.")
             return
-        try:
-            # Probe the primary model only, and briefly. Walking the whole
-            # fallback chain here would multiply the timeout by its length for
-            # no benefit: the chain is exercised on real requests anyway.
-            await self._probe(self._models()[0], timeout=20)
-            print(f"LLM ready: {self._provider}/{self._models()[0]}")
-        except LLMUnavailable as exc:
-            print(f"LLM unavailable: {exc}")
-        except Exception as exc:
-            print(f"Could not verify the LLM ({type(exc).__name__}); continuing.")
+        for line in await asyncio.gather(*(probe(p) for p in self._providers)):
+            print(f"[llm] {line}")
 
 
 llm_client = LLMClient()

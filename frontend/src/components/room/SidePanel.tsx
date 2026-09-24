@@ -4,6 +4,8 @@ import type { SidePanelKind } from '../../store'
 import { TranscriptPanel } from '../meeting/TranscriptPanel'
 import { AssistantDock } from '../meeting/AssistantDock'
 import { ChatPanel, ParticipantsPanel } from './panels'
+import { BriefingPanel } from '../../features/briefing'
+import { AgentPanel } from '../../features/agent'
 
 export interface SidePanelProps {
     meetingId: string
@@ -82,6 +84,16 @@ export function SidePanel({
                                 <div className="room-panel-body">
                                     <TranscriptPanel meetingId={meetingId} compact />
                                 </div>
+                            </div>
+                        )}
+                        {panel === 'briefing' && (
+                            <div className="room-panel-col">
+                                <BriefingPanel meetingId={meetingId} onClose={onClose} />
+                            </div>
+                        )}
+                        {panel === 'agent' && (
+                            <div className="room-panel-col">
+                                <AgentPanel meetingId={meetingId} onClose={onClose} />
                             </div>
                         )}
                         {panel === 'assistant' && (

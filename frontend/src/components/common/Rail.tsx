@@ -2,8 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import {
     Calendar, LayoutDashboard, LogOut, PanelLeftClose, PanelLeftOpen,
-    Search, Video, KeyRound,
-} from 'lucide-react'
+    Search, Video, KeyRound, UserCog } from 'lucide-react'
 import { useAuthStore } from '../../store'
 import { ThemeToggle } from './ThemeToggle'
 
@@ -70,6 +69,7 @@ export function Rail() {
         { to: '/dashboard', label: 'Home', icon: LayoutDashboard },
         { to: '/join', label: 'Join with a code', icon: KeyRound },
         { to: '/calendar', label: 'Calendar', icon: Calendar },
+        { to: '/assistant', label: 'My agent', icon: UserCog },
     ]
 
     const isActive = (to: string) => pathname === to || pathname.startsWith(`${to}/`)

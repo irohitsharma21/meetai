@@ -3,7 +3,7 @@ import { useLocalParticipant } from '@livekit/components-react'
 import {
     Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, Hand, SmilePlus, Captions,
     Sparkles, MoreHorizontal, PhoneOff, MessageSquare, Users, Bot, Copy, Link as LinkIcon,
-    Settings2, FileText, Info, Keyboard, LogOut, Ban, ChevronLeft,
+    Settings2, FileText, Info, Keyboard, LogOut, Ban, ChevronLeft, BookOpenText, UserCog,
 } from 'lucide-react'
 import { useMeetingRoomStore, useToastStore, type SidePanelKind } from '../../store'
 import { Popover, MenuItem, MenuDivider, MenuHeading } from './Popover'
@@ -356,6 +356,18 @@ export function ControlBar({
                                         </>
                                     )}
                                     <MenuItem
+                                        icon={<BookOpenText size={15} />}
+                                        label="Briefing cues"
+                                        checked={sidePanel === 'briefing'}
+                                        onSelect={() => { closeMenu(); togglePanel('briefing') }}
+                                    />
+                                    <MenuItem
+                                        icon={<UserCog size={15} />}
+                                        label="My agent"
+                                        checked={sidePanel === 'agent'}
+                                        onSelect={() => { closeMenu(); togglePanel('agent') }}
+                                    />
+                                    <MenuItem
                                         icon={<FileText size={15} />}
                                         label="Transcript"
                                         checked={sidePanel === 'transcript'}
@@ -458,6 +470,22 @@ export function ControlBar({
                             </>
                         )}
                     />
+                    {!compact && (
+                        <Ctl
+                            icon={<BookOpenText size={19} />}
+                            tip="Briefing cues"
+                            on={sidePanel === 'briefing'}
+                            onClick={panelBtn('briefing')}
+                        />
+                    )}
+                    {!compact && (
+                        <Ctl
+                            icon={<UserCog size={19} />}
+                            tip="My agent"
+                            on={sidePanel === 'agent'}
+                            onClick={panelBtn('agent')}
+                        />
+                    )}
                     {!compact && (
                         <Ctl
                             icon={<Bot size={19} />}

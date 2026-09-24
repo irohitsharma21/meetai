@@ -103,7 +103,36 @@ class Settings(BaseSettings):
 
     @property
     def llm_configured(self) -> bool:
-        return self.openrouter_configured or bool(self.GROQ_API_KEY)
+        return bool(
+            self.CEREBRAS_API_KEY or self.GEMINI_API_KEY
+            or self.OPENROUTER_API_KEY or self.GROQ_API_KEY
+        )
+
+    # ── LLM provider chain ────────────────────────────────────────────────────
+    # Every provider with a key joins the chain in this order. A request starts
+    # on the first; the next is started alongside it if the first fails or has
+    # not answered within the head start below. See services/llm_client.py.
+    LLM_PROVIDERS: str = "cerebras,gemini,openrouter,groq"
+    # Head start before the next provider joins the race. Short for the live
+    # calls (briefing cues, the agent's intent parsing), where an answer that
+    # arrives after the conversation moved on is useless; long for reports.
+    LLM_HEDGE_FAST_S: float = 1.5
+    LLM_HEDGE_S: float = 12.0
+
+    # Cerebras: very fast inference. The key only works once the account has
+    # quota; a 402 benches the provider for ten minutes, then it is retried.
+    CEREBRAS_API_KEY: str = ""
+    CEREBRAS_MODEL: str = "qwen-3.8-27b"
+    CEREBRAS_FAST_MODEL: str = "qwen-3.8-27b"
+    # qwen-3.8 is a reasoning model; "low" keeps a JSON decision short.
+    CEREBRAS_REASONING_EFFORT: str = "low"
+
+    # Gemini via Google's OpenAI-compatible endpoint. The 2.5 models are closed
+    # to new keys; the free tier's larger models often answer 503 "high
+    # demand", hence a list per tier rather than one model.
+    GEMINI_API_KEY: str = ""
+    GEMINI_MODELS: List[str] = ["gemini-3.5-flash", "gemini-flash-latest", "gemini-3.5-flash-lite"]
+    GEMINI_FAST_MODELS: List[str] = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
 
     # ── Groq (optional fallback) ──────────────────────────────────────────────
     # Retained as an alternative STT and LLM backend. llama3-70b-8192 and
@@ -158,6 +187,7 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
     QDRANT_PATH: str = "./data/qdrant"
     QDRANT_URL: str = ""  # set to use a Qdrant server instead of embedded mode
+    QDRANT_API_KEY: str = ""  # Qdrant Cloud / secured servers
     QDRANT_COLLECTION: str = "meeting_transcripts"
 
     # ── Voice agent (optional) ────────────────────────────────────────────────
