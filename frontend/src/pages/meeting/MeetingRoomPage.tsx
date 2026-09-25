@@ -6,6 +6,7 @@ import { Video } from 'lucide-react'
 import { ActionPopupSystem } from '../../components/meeting/ActionPopup'
 import { CueOverlay, BriefingPrejoinCard } from '../../features/briefing'
 import { AgentActionToasts } from '../../features/agent'
+import { TranslationController, TranslationOffer, TranslatedCaptions } from '../../features/translation'
 import { PreJoin } from '../../components/room/PreJoin'
 import { WaitingRoom, type WaitingState } from '../../components/room/WaitingRoom'
 import { RoomHeader } from '../../components/room/RoomHeader'
@@ -138,7 +139,10 @@ function RoomInner({
                     />
                     <ReactionsOverlay />
                     <CaptionsOverlay enabled={captionsOn} />
+                    <TranslatedCaptions />
                     <CueOverlay meetingId={meetingId} />
+                    <TranslationOffer meetingId={meetingId} />
+                    <TranslationController meetingId={meetingId} />
                     <AgentActionToasts
                         meetingId={meetingId}
                         panelOpen={sidePanel === 'agent'}

@@ -27,6 +27,15 @@ that point was dropped without a line in any log.
 One socket is still opened per speaker, because Deepgram transcribes a single
 audio stream and mixing two people into one socket would attribute both to
 whoever spoke first.
+
+Why each stream carries its own language:
+
+A socket is opened with one `language` and cannot change it. Automatic
+detection was tried and is not good enough - `language=multi` turned Tamil
+into nonsense Devanagari and detect_language called the same clip English -
+whereas nova-3 told the language explicitly is near-perfect. So every speaker's
+stream is opened in the language they declared, and switching it means
+retiring the socket and opening another (DeepgramLiveStream.set_language).
 """
 
 from __future__ import annotations
@@ -40,6 +49,7 @@ from urllib.parse import urlencode
 import websockets
 
 from core.config import settings
+from core.http import SSL_CONTEXT
 
 # Called with (text, confidence) for each finalised utterance.
 OnFinal = Callable[[str, float], Awaitable[None]]
@@ -64,9 +74,15 @@ IDLE_CLOSE_S = 6.0
 class DeepgramLiveSession:
     """One Deepgram socket, carrying exactly one WebM container."""
 
-    def __init__(self, speaker_id: str, on_final: OnFinal) -> None:
+    def __init__(
+        self, speaker_id: str, on_final: OnFinal, language: Optional[str] = None
+    ) -> None:
         self.speaker_id = speaker_id
         self._on_final = on_final
+        # Deepgram's `language` parameter ("ta", "multi"), not an app code.
+        # Unset means the deployment-wide default, which is what every stream
+        # used before per-speaker languages existed.
+        self.language = language or settings.DEEPGRAM_LANGUAGE
         self._ws: Optional[websockets.ClientConnection] = None
         self._reader: Optional[asyncio.Task] = None
         self._closed = False
@@ -86,7 +102,7 @@ class DeepgramLiveSession:
     async def start(self) -> None:
         query = {
             "model": settings.DEEPGRAM_MODEL,
-            "language": settings.DEEPGRAM_LANGUAGE,
+            "language": self.language,
             "smart_format": "true",
             "punctuate": "true",
             # Interim results would let the UI show partial words, but they
@@ -106,6 +122,9 @@ class DeepgramLiveSession:
             # Audio arrives faster than transcripts come back; a small queue is
             # enough and keeps memory bounded if the network stalls.
             max_queue=32,
+            # Shared context: building one per connection is synchronous
+            # work on the event loop, paid by every speaker who joins.
+            ssl=SSL_CONTEXT,
         )
         self._reader = asyncio.create_task(self._read_loop())
 
@@ -171,7 +190,16 @@ class DeepgramLiveSession:
                     # Deepgram emits empty finals for silence; there is nothing
                     # to record for those.
                     if text and message.get("is_final"):
-                        await self._on_final(text, float(best.get("confidence", 0.0)))
+                        # One line failing downstream (a database hiccup, a
+                        # console that cannot print Tamil) must not take the
+                        # socket - and every later utterance - down with it.
+                        try:
+                            await self._on_final(text, float(best.get("confidence", 0.0)))
+                        except Exception as exc:
+                            print(
+                                f"[stt] dropped one line for {self.speaker_id}: "
+                                f"{type(exc).__name__}: {exc}"
+                            )
 
                 elif message.get("type") == "Error":
                     self.error = str(message)
@@ -208,12 +236,16 @@ class DeepgramLiveStream:
         media clusters that follow.
 
     Exposes the same feed()/close() surface as a single session, so the
-    meeting route does not need to know any of this happens.
+    meeting route does not need to know any of this happens. set_language()
+    is the one addition: it rides on the same retire-and-reopen machinery.
     """
 
-    def __init__(self, speaker_id: str, on_final: OnFinal) -> None:
+    def __init__(
+        self, speaker_id: str, on_final: OnFinal, language: Optional[str] = None
+    ) -> None:
         self.speaker_id = speaker_id
         self._on_final = on_final
+        self.language = language or settings.DEEPGRAM_LANGUAGE
         self._session: Optional[DeepgramLiveSession] = None
         self._init_segment: Optional[bytes] = None
         self._last_audio = 0.0
@@ -229,7 +261,7 @@ class DeepgramLiveStream:
         self._watchdog = asyncio.create_task(self._idle_watchdog())
 
     async def _open(self) -> None:
-        session = DeepgramLiveSession(self.speaker_id, self._on_final)
+        session = DeepgramLiveSession(self.speaker_id, self._on_final, self.language)
         await session.start()
         self._session = session
         self.sessions_opened += 1
@@ -276,6 +308,45 @@ class DeepgramLiveStream:
 
             if await self._session.feed(chunk):
                 self._last_audio = time.monotonic()
+
+    async def set_language(
+        self, language: Optional[str], on_final: Optional[OnFinal] = None
+    ) -> bool:
+        """
+        Decode this speaker in a different language from now on.
+
+        The open socket is retired, not killed: its CloseStream flush runs in
+        the background, so whatever the speaker said just before switching is
+        still finalised - in the language it was spoken in, and through the
+        callback that socket was opened with. That is why `on_final` can be
+        replaced here too: a caller that stamps each line with its language
+        hands over a callback bound to the new one, and the tail of the old
+        socket keeps the old stamp.
+
+        The replacement socket opens lazily on the next chunk. If that chunk is
+        the middle of a WebM recording, feed() primes the new decoder with the
+        stored initialisation segment exactly as it does after a dropped
+        socket, so switching never needs the browser to restart its recorder.
+
+        Returns True when anything changed.
+        """
+        language = language or settings.DEEPGRAM_LANGUAGE
+        async with self._lock:
+            if self._closed:
+                return False
+            if on_final is not None:
+                self._on_final = on_final
+            if language == self.language:
+                return on_final is not None
+            print(
+                f"[stt] {self.speaker_id}: switching Deepgram language "
+                f"{self.language} -> {language}"
+            )
+            self.language = language
+            if self._session is not None:
+                self._retire(self._session)
+                self._session = None
+            return True
 
     async def _idle_watchdog(self) -> None:
         try:

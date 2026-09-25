@@ -78,8 +78,75 @@ from services.transcription_service import transcription_service
 from services.realtime import manager
 from services.briefing_service import briefing_service
 from services.agent_service import agent_service
+from core.languages import DEFAULT_LANGUAGE, normalise
 
 router = APIRouter(prefix="/meetings", tags=["meetings"])
+
+
+# ── Live translation hook ─────────────────────────────────────────────────────
+# Imported lazily and at most once. Translation is an add-on to transcription:
+# if its module is missing, broken, or its provider is down, people must still
+# get a transcript, so nothing here is allowed to raise into the socket loop.
+_translation_cache: dict = {}
+
+
+def _translation():
+    """The translation service, or None when it cannot be imported (logged once)."""
+    if "svc" not in _translation_cache:
+        try:
+            from services.translation_service import translation_service
+            _translation_cache["svc"] = translation_service
+        except Exception as exc:
+            print(f"[translation] unavailable, transcripts will not be translated: "
+                  f"{type(exc).__name__}: {exc}")
+            _translation_cache["svc"] = None
+    return _translation_cache["svc"]
+
+
+async def _guarded(coro, what: str) -> None:
+    """Run a detached hook so its failure is logged, not left unretrieved."""
+    try:
+        await coro
+    except Exception as exc:
+        print(f"[translation] {what} failed: {type(exc).__name__}: {exc}")
+
+
+async def _resolve_spoken_language(meeting_id: str, username: str) -> Optional[str]:
+    """
+    What `username` is speaking in this meeting, as an app code.
+
+    The translation service owns the per-meeting answer ("I'm speaking: X");
+    failing that, the account's native language. None means nobody ever set
+    one, and the stream then opens in DEEPGRAM_LANGUAGE exactly as it did
+    before languages existed.
+    """
+    svc = _translation()
+    if svc is not None:
+        try:
+            code = normalise(await svc.spoken_language(meeting_id, username), default=None)
+            if code:
+                return code
+        except Exception as exc:
+            print(f"[translation] spoken_language({username}) failed: "
+                  f"{type(exc).__name__}: {exc}")
+    try:
+        user = await get_users_collection().find_one({"username": username})
+        return normalise((user or {}).get("native_language"), default=None)
+    except Exception:
+        return None
+
+
+def _speaker_language_message(meeting_id: str, username: str) -> dict:
+    """
+    `speaker_language` - who is speaking what. Broadcast on the meeting socket
+    when a speaker connects and whenever they switch; anyone else announcing
+    a switch (the translation REST route) should send the same shape through
+    services.realtime.manager.broadcast:
+
+        {"type": "speaker_language", "username": "priya", "language": "ta"}
+    """
+    code = transcription_service.speaker_language(meeting_id, username) or DEFAULT_LANGUAGE
+    return {"type": "speaker_language", "username": username, "language": code}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -526,6 +593,17 @@ async def end_meeting(
     # disconnect alone is indistinguishable from a network blip.
     await manager.broadcast(meeting_id, {"type": "meeting_ended"})
 
+    # Per-meeting in-memory state (offer history, audio sequencers, cue
+    # cooldowns) has no further use once the meeting is over.
+    for module, name in (
+        ("services.translation_service", "translation_service"),
+        ("services.briefing_service", "briefing_service"),
+    ):
+        try:
+            getattr(__import__(module, fromlist=[name]), name).forget_meeting(meeting_id)
+        except Exception as exc:
+            print(f"[{name}] forget_meeting({meeting_id}) skipped: {exc}")
+
     return {"status": "ended", "meeting_id": meeting_id, "duration_seconds": duration}
 
 
@@ -901,12 +979,14 @@ async def meeting_websocket(
         {type: "lobby_update", waiting_count: n}
         {type: "settings_update", settings: {...}}
         {type: "participant_removed", username: "..."}
+        {type: "speaker_language", username: "...", language: "ta"}
         {type: "meeting_ended"}
         {type: "error", message: "..."}
 
     Text JSON commands from client:
       {cmd: "identify", username: "...", token: "..."}
       {cmd: "audio_config", format: "webm|pcm", sample_rate: 16000}
+      {cmd: "set_language", language: "ta"}   – "I'm speaking: Tamil"
     """
     await websocket.accept()
     print(f"WebSocket connection initiated for {meeting_id}")
@@ -995,6 +1075,14 @@ async def meeting_websocket(
             asyncio.create_task(briefing_service.on_transcript(meeting_id, entry, context))
             asyncio.create_task(agent_service.on_transcript(meeting_id, entry, context))
 
+            # Live translation for listeners who speak another language.
+            translation = _translation()
+            if translation is not None:
+                asyncio.create_task(_guarded(
+                    translation.on_transcript(meeting_id, entry, context),
+                    "on_transcript",
+                ))
+
         async def sweep_idle_buffers() -> None:
             """
             Flush buffers that have gone quiet.
@@ -1016,9 +1104,38 @@ async def meeting_websocket(
         # Prefer streaming. Deepgram keeps decoder state across the whole
         # stream, so the browser's headerless WebM fragments are handled
         # natively instead of being reassembled here.
+        # Decode this speaker in the language they declared. Auto-detection
+        # mislabels Tamil as English, so it is never left to Deepgram to guess.
+        spoken = await _resolve_spoken_language(meeting_id, username)
         live = await transcription_service.open_live_session(
-            meeting_id, username, publish_entry
+            meeting_id, username, publish_entry, language=spoken
         )
+
+        # Everyone learns what the newcomer speaks, and the newcomer learns
+        # what everyone already here speaks - listeners need both to decide
+        # what to translate.
+        await manager.broadcast(meeting_id, _speaker_language_message(meeting_id, username))
+        for other in manager.usernames(meeting_id) - {username}:
+            await websocket.send_json(_speaker_language_message(meeting_id, other))
+
+        async def set_language(raw) -> None:
+            code = normalise(raw if isinstance(raw, str) else None, default=None)
+            if code is None:
+                await websocket.send_json({
+                    "type": "error", "message": f"Unknown language {raw!r}",
+                })
+                return
+            await transcription_service.set_speaker_language(meeting_id, username, code)
+            translation = _translation()
+            if translation is not None and hasattr(translation, "set_spoken_language"):
+                try:
+                    result = translation.set_spoken_language(meeting_id, username, code)
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception as exc:
+                    print(f"[translation] set_spoken_language failed: "
+                          f"{type(exc).__name__}: {exc}")
+            await manager.broadcast(meeting_id, _speaker_language_message(meeting_id, username))
 
         # The idle sweeper only has work to do on the buffered path; streaming
         # does its own utterance segmentation.
@@ -1037,6 +1154,8 @@ async def meeting_websocket(
                 if data.get("cmd") == "audio_config":
                     print(f"Audio Config received: {data}")
                     is_webm = data.get("format", "webm") == "webm"
+                elif data.get("cmd") == "set_language":
+                    await set_language(data.get("language"))
 
             # Handle binary audio data
             elif "bytes" in message and message["bytes"]:

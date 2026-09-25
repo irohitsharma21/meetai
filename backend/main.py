@@ -23,7 +23,7 @@ from services.transcription_service import transcription_service
 from fastapi.exceptions import RequestValidationError
 from routers import (
     agent_routes, auth_routes, briefing_routes, calendar_routes,
-    insight_routes, meeting_routes, transcript_routes,
+    insight_routes, meeting_routes, transcript_routes, translation_routes,
 )
 
 # Provider summary at boot. Key material is never printed - even a partial key
@@ -93,6 +93,7 @@ app.include_router(calendar_routes.router)
 app.include_router(insight_routes.router)
 app.include_router(briefing_routes.router)
 app.include_router(agent_routes.router)
+app.include_router(translation_routes.router)
 
 # ── Health check ──────────────────────────────────────────────────────────────
 def _database_status() -> dict:

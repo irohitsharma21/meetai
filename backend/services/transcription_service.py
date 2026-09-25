@@ -11,6 +11,12 @@ Pipeline:
 
 Deepgram is the default because it decodes the WebM/Opus container that the
 browser's MediaRecorder emits, so nothing has to be transcoded on the way.
+
+Every speaker is decoded in their own language. Auto-detection was measured
+and rejected (see core/languages.py), so the meeting route tells this service
+what each person speaks and every TranscriptEntry is stamped with that code.
+A speaker nobody has set a language for is decoded exactly as before, in
+settings.DEEPGRAM_LANGUAGE.
 """
 
 import asyncio
@@ -26,6 +32,8 @@ from typing import Dict, List, Optional
 from groq import AsyncGroq
 
 from core.config import settings
+from core.http import async_client
+from core.languages import deepgram_language, normalise
 from services.deepgram_live import DeepgramLiveStream
 from models.meeting_model import TranscriptEntry
 
@@ -121,6 +129,75 @@ class TranscriptionBuffer:
         return buf.getvalue()
 
 
+def _default_code() -> Optional[str]:
+    """
+    The app code for a speaker with no declared language.
+
+    Derived from DEEPGRAM_LANGUAGE so the stamp matches what was actually
+    decoded; a deployment configured for `multi` has no single language to
+    claim, and None says so honestly instead of pretending it was English.
+    """
+    return normalise(settings.DEEPGRAM_LANGUAGE, default=None)
+
+
+def _code_of(language: Optional[str]) -> Optional[str]:
+    """App code for a requested language; the configured default when unset."""
+    return (normalise(language, default=None) if language else None) or _default_code()
+
+
+def _deepgram_param(language: Optional[str]) -> Optional[str]:
+    """
+    Deepgram `language` value for a requested app code.
+
+    None (nothing declared, or a code nobody recognises) leaves the stream on
+    settings.DEEPGRAM_LANGUAGE, so meetings where nobody set a language are
+    decoded byte-for-byte as they were before.
+    """
+    code = normalise(language, default=None) if language else None
+    return deepgram_language(code) if code else None
+
+
+class SpeakerStream:
+    """
+    One speaker's live Deepgram feed, as handed to the meeting route.
+
+    A thin wrapper so the language can be switched in app terms ("ta") while
+    DeepgramLiveStream only deals in Deepgram's parameter ("multi" for Hindi),
+    and so the service's registry forgets the stream when it closes. Keeps the
+    feed()/close() surface the route already used.
+    """
+
+    def __init__(self, service: "TranscriptionService", key: tuple,
+                 stream: DeepgramLiveStream, language: Optional[str],
+                 make_handler) -> None:
+        self._service = service
+        self._key = key
+        self._stream = stream
+        self._make_handler = make_handler
+        self.language = language  # app code stamped on entries (None = unknown)
+
+    async def feed(self, chunk: bytes) -> None:
+        await self._stream.feed(chunk)
+
+    async def set_language(self, language: Optional[str]) -> bool:
+        code = _code_of(language)
+        # A fresh callback bound to the new code: the old socket's tail keeps
+        # the old stamp, everything after the switch carries the new one.
+        changed = await self._stream.set_language(
+            _deepgram_param(language), self._make_handler(code)
+        )
+        self.language = code
+        return changed
+
+    async def close(self) -> None:
+        self._service._unregister(self._key, self)
+        await self._stream.close()
+
+    @property
+    def sessions_opened(self) -> int:
+        return self._stream.sessions_opened
+
+
 class TranscriptionService:
     """
     Real-time transcription pipeline using Groq Whisper.
@@ -151,6 +228,13 @@ class TranscriptionService:
         # meeting_id → {speaker_id → TranscriptionBuffer}
         self._buffers: Dict[str, Dict[str, TranscriptionBuffer]] = defaultdict(dict)
         self._meeting_start_times: Dict[str, float] = {}
+        # (meeting_id, username) → declared app language code. Read by the
+        # buffered path on every request and set by open_live_session and
+        # set_speaker_language, so both paths agree on what someone speaks.
+        self._speaker_languages: Dict[tuple, str] = {}
+        # (meeting_id, username) → open live streams. A list because the same
+        # account can have the room open in two tabs.
+        self._live: Dict[tuple, List[SpeakerStream]] = defaultdict(list)
 
         # Why transcription is unavailable, or None when it is fine. A silent
         # empty transcript panel is indistinguishable from "nobody has spoken
@@ -196,7 +280,7 @@ class TranscriptionService:
             if self._provider == "groq":
                 await self._client.models.list()
             else:
-                async with httpx.AsyncClient(timeout=20) as client:
+                async with async_client(timeout=20) as client:
                     r = await client.get(
                         "https://api.deepgram.com/v1/projects",
                         headers={"Authorization": f"Token {settings.DEEPGRAM_API_KEY}"},
@@ -227,6 +311,50 @@ class TranscriptionService:
     def end_session(self, meeting_id: str) -> None:
         self._buffers.pop(meeting_id, None)
         self._meeting_start_times.pop(meeting_id, None)
+        for key in [k for k in self._speaker_languages if k[0] == meeting_id]:
+            self._speaker_languages.pop(key, None)
+
+    # ── Per-speaker language ──────────────────────────────────────────────────
+    def speaker_language(self, meeting_id: str, speaker_id: str) -> Optional[str]:
+        """App code this speaker is decoded in; the configured default if unset."""
+        return self._speaker_languages.get((meeting_id, speaker_id)) or _default_code()
+
+    def _remember_language(
+        self, meeting_id: str, speaker_id: str, language: Optional[str]
+    ) -> None:
+        code = normalise(language, default=None) if language else None
+        if code:
+            self._speaker_languages[(meeting_id, speaker_id)] = code
+
+    async def set_speaker_language(self, meeting_id: str, username: str, language: str) -> bool:
+        """
+        Switch what `username` is decoded in, mid-meeting.
+
+        Called when someone changes "I'm speaking: X" in the room. Every open
+        stream of theirs is retired and reopened in the new language - the
+        tail of what they already said is still finalised in the old one - and
+        the buffered path picks the new code up on its next request. Returns
+        True when at least one live stream was open; False is not an error,
+        the language is remembered for whatever they open next.
+        """
+        self._remember_language(meeting_id, username, language)
+        streams = list(self._live.get((meeting_id, username), []))
+        for stream in streams:
+            try:
+                await stream.set_language(language)
+            except Exception as exc:
+                print(
+                    f"[stt] language switch for {username} failed: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        return bool(streams)
+
+    def _unregister(self, key: tuple, stream: SpeakerStream) -> None:
+        streams = self._live.get(key)
+        if streams and stream in streams:
+            streams.remove(stream)
+            if not streams:
+                self._live.pop(key, None)
 
     def _get_or_create_buffer(
         self, meeting_id: str, speaker_id: str, is_webm: bool = True
@@ -253,11 +381,16 @@ class TranscriptionService:
         speaker_id: str,
         audio_data: bytes,
         is_webm: bool = True,
+        language: Optional[str] = None,
     ) -> Optional[TranscriptEntry]:
         """
         Add audio chunk to speaker buffer.
         Returns a TranscriptEntry when buffer is flushed and transcribed.
+
+        `language` (app code) is optional: when given it becomes this speaker's
+        language, otherwise whatever was last set for them is used.
         """
+        self._remember_language(meeting_id, speaker_id, language)
         # Once the provider has told us the credentials are bad, stop buffering
         # and stop calling it: retrying on every 1.5s chunk just burns CPU and
         # fills the log with identical 401s.
@@ -285,14 +418,16 @@ class TranscriptionService:
         """Send the buffered audio to the configured provider."""
         if not self._configured:
             return None  # transcription disabled; the meeting itself is fine
+        declared = self._speaker_languages.get((meeting_id, speaker_id))
+        code = declared or _default_code()
         try:
             if self._provider == "deepgram":
                 text, confidence = await self._transcribe_deepgram(
-                    meeting_id, speaker_id, audio_bytes, is_webm
+                    meeting_id, speaker_id, audio_bytes, is_webm, declared
                 )
             else:
                 text, confidence = await self._transcribe_groq(
-                    meeting_id, speaker_id, audio_bytes, is_webm
+                    meeting_id, speaker_id, audio_bytes, is_webm, declared
                 )
 
             self._consecutive_failures = 0
@@ -304,7 +439,10 @@ class TranscriptionService:
             if not text or text in ["[BLANK_AUDIO]", "Thank you.", "Thanks for watching!"]:
                 return None
 
-            print(f"Transcribed for {speaker_id}: [{text}]")
+            # ascii() rather than the raw text: on a Windows console (cp1252)
+            # printing Tamil raises UnicodeEncodeError, which this try block
+            # would then count as a failed transcription and drop the line.
+            print(f"Transcribed for {speaker_id} [{code}]: {ascii(text)}")
             return TranscriptEntry(
                 speaker=speaker_id,
                 text=text,
@@ -313,6 +451,7 @@ class TranscriptionService:
                 timestamp_ms=int(
                     (time.time() - self._meeting_start_times.get(meeting_id, time.time())) * 1000
                 ),
+                language=code,
             )
 
         except Exception as e:
@@ -326,6 +465,7 @@ class TranscriptionService:
         speaker_id: str,
         audio_bytes: bytes,
         is_webm: bool,
+        language: Optional[str] = None,
     ) -> tuple[str, float]:
         """
         Deepgram pre-recorded transcription.
@@ -345,20 +485,27 @@ class TranscriptionService:
             buf = self._get_or_create_buffer(meeting_id, speaker_id, is_webm=False)
             payload, content_type = buf.build_wav(audio_bytes), "audio/wav"
 
-        return await self._deepgram_request(payload, content_type)
+        return await self._deepgram_request(
+            payload, content_type, _deepgram_param(language)
+        )
 
     async def _deepgram_request(
-        self, payload: bytes, content_type: str
+        self, payload: bytes, content_type: str, language: Optional[str] = None
     ) -> tuple[str, float]:
-        """POST one complete audio container to Deepgram; return (text, confidence)."""
+        """
+        POST one complete audio container to Deepgram; return (text, confidence).
+
+        `language` is Deepgram's parameter value; None keeps the configured
+        default, which is what the voice assistant relies on.
+        """
         params = {
             "model": self._model,
-            "language": settings.DEEPGRAM_LANGUAGE,
+            "language": language or settings.DEEPGRAM_LANGUAGE,
             "smart_format": "true",
             "punctuate": "true",
         }
 
-        async with httpx.AsyncClient(timeout=45) as client:
+        async with async_client(timeout=45) as client:
             response = await client.post(
                 "https://api.deepgram.com/v1/listen",
                 params=params,
@@ -388,8 +535,19 @@ class TranscriptionService:
         speaker_id: str,
         audio_bytes: bytes,
         is_webm: bool,
+        language: Optional[str] = None,
     ) -> tuple[str, float]:
-        """Groq Whisper transcription, retained as an alternative backend."""
+        """
+        Groq Whisper transcription, retained as an alternative backend.
+
+        Whisper takes ISO-639-1 hints, which the app codes already are. Where
+        Deepgram would use `multi` (Hindi, for Hinglish) the hint is left out
+        instead: Whisper's own detection copes with code-switching better than
+        being pinned to one language and transliterating the other. Nothing
+        declared keeps the English hint this path has always sent.
+        """
+        hint = _deepgram_param(language) or "en"
+        hint_kwargs = {} if hint == "multi" else {"language": hint}
         if is_webm:
             file_data = ("audio.webm", io.BytesIO(audio_bytes), "audio/webm")
         else:
@@ -403,9 +561,9 @@ class TranscriptionService:
         response = await self._client.audio.transcriptions.create(
             file=file_data,
             model=self._model,
-            language="en",
             response_format="verbose_json",
             temperature=0.0,
+            **hint_kwargs,
         )
         return response.text, float(getattr(response, "avg_log_prob", 0.9))
 
@@ -414,45 +572,68 @@ class TranscriptionService:
         """Deepgram has a streaming endpoint; the Groq path is request/response."""
         return self._provider == "deepgram" and self._disabled_reason is None
 
-    async def open_live_session(self, meeting_id: str, speaker_id: str, on_final):
+    async def open_live_session(
+        self,
+        meeting_id: str,
+        speaker_id: str,
+        on_final,
+        language: Optional[str] = None,
+    ) -> Optional[SpeakerStream]:
         """
         Open a streaming transcription socket for one speaker.
 
         `on_final` is awaited with a finished TranscriptEntry each time Deepgram
-        closes out an utterance. Returns None when streaming is unavailable, in
-        which case the caller should fall back to buffered chunks.
+        closes out an utterance. `language` is the app code the speaker talks
+        in ("ta"); it is mapped to Deepgram's parameter here and stamped on
+        every entry. None decodes in settings.DEEPGRAM_LANGUAGE, exactly as
+        before languages existed. Returns None when streaming is unavailable,
+        in which case the caller should fall back to buffered chunks.
         """
+        # Remembered even when streaming is off, so the buffered fallback
+        # decodes this speaker in the same language.
+        self._remember_language(meeting_id, speaker_id, language)
         if not self.supports_streaming:
             return None
 
         if meeting_id not in self._meeting_start_times:
             self.start_session(meeting_id)
 
-        async def handle(text: str, confidence: float) -> None:
-            entry = TranscriptEntry(
-                speaker=speaker_id,
-                text=text,
-                time=self._elapsed_time(meeting_id),
-                confidence=confidence,
-                timestamp_ms=int(
-                    (time.time() - self._meeting_start_times.get(meeting_id, time.time()))
-                    * 1000
-                ),
-            )
-            await on_final(entry)
+        def make_handler(code: Optional[str]):
+            async def handle(text: str, confidence: float) -> None:
+                entry = TranscriptEntry(
+                    speaker=speaker_id,
+                    text=text,
+                    time=self._elapsed_time(meeting_id),
+                    confidence=confidence,
+                    timestamp_ms=int(
+                        (time.time() - self._meeting_start_times.get(meeting_id, time.time()))
+                        * 1000
+                    ),
+                    language=code,
+                )
+                await on_final(entry)
+            return handle
+
+        code = _code_of(language)
 
         # A resilient stream rather than a single socket: it survives
         # unmuting, silences past Deepgram's 10 s timeout, and dropped sockets.
-        session = DeepgramLiveStream(speaker_id, handle)
+        stream = DeepgramLiveStream(
+            speaker_id, make_handler(code), _deepgram_param(language)
+        )
         try:
-            await session.start()
+            await stream.start()
         except Exception as exc:
             # Fall back rather than fail: the buffered path still works for the
             # first chunk, and the meeting itself is unaffected either way.
             print(f"Deepgram live session failed to open: {type(exc).__name__}: {exc}")
             self._note_failure(exc)
             return None
-        return session
+
+        key = (meeting_id, speaker_id)
+        wrapped = SpeakerStream(self, key, stream, code, make_handler)
+        self._live[key].append(wrapped)
+        return wrapped
 
     async def flush_stale(
         self, meeting_id: str, idle_for: float = 1.5

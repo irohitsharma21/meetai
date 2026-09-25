@@ -3,7 +3,7 @@ import { useLocalParticipant } from '@livekit/components-react'
 import {
     Mic, MicOff, Video, VideoOff, MonitorUp, MonitorOff, Hand, SmilePlus, Captions,
     Sparkles, MoreHorizontal, PhoneOff, MessageSquare, Users, Bot, Copy, Link as LinkIcon,
-    Settings2, FileText, Info, Keyboard, LogOut, Ban, ChevronLeft, BookOpenText, UserCog,
+    Settings2, FileText, Info, Keyboard, LogOut, Ban, ChevronLeft, BookOpenText, UserCog, Languages,
 } from 'lucide-react'
 import { useMeetingRoomStore, useToastStore, type SidePanelKind } from '../../store'
 import { Popover, MenuItem, MenuDivider, MenuHeading } from './Popover'
@@ -356,6 +356,12 @@ export function ControlBar({
                                         </>
                                     )}
                                     <MenuItem
+                                        icon={<Languages size={15} />}
+                                        label="Live translation"
+                                        checked={sidePanel === 'translation'}
+                                        onSelect={() => { closeMenu(); togglePanel('translation') }}
+                                    />
+                                    <MenuItem
                                         icon={<BookOpenText size={15} />}
                                         label="Briefing cues"
                                         checked={sidePanel === 'briefing'}
@@ -470,6 +476,14 @@ export function ControlBar({
                             </>
                         )}
                     />
+                    {!compact && (
+                        <Ctl
+                            icon={<Languages size={19} />}
+                            tip="Live translation"
+                            on={sidePanel === 'translation'}
+                            onClick={panelBtn('translation')}
+                        />
+                    )}
                     {!compact && (
                         <Ctl
                             icon={<BookOpenText size={19} />}

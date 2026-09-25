@@ -12,6 +12,8 @@ interface AuthState {
     refreshToken: string | null
     isAuthenticated: boolean
     setAuth: (user: User, access: string, refresh: string) => void
+    /** Replace the signed-in user's profile (e.g. after changing language). */
+    setUser: (user: User) => void
     clearAuth: () => void
 }
 
@@ -29,6 +31,8 @@ export const useAuthStore = create<AuthState>()(
                 set({ user, accessToken: access, refreshToken: refresh, isAuthenticated: true })
             },
 
+            setUser: (user) => set({ user }),
+
             clearAuth: () => {
                 localStorage.removeItem('access_token')
                 localStorage.removeItem('refresh_token')
@@ -45,7 +49,7 @@ export const useAuthStore = create<AuthState>()(
 
 // ── Meeting Room Store ────────────────────────────────────────────────
 /** Which panel the right-hand slot shows. Exactly one at a time, or none. */
-export type SidePanelKind = 'chat' | 'participants' | 'transcript' | 'assistant' | 'briefing' | 'agent'
+export type SidePanelKind = 'chat' | 'participants' | 'transcript' | 'assistant' | 'briefing' | 'agent' | 'translation'
 
 /**
  * Why the room is being left without the user pressing anything. Set by the

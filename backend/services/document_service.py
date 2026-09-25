@@ -49,6 +49,7 @@ import math
 import mimetypes
 import os
 import re
+import threading
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
@@ -57,6 +58,16 @@ from pathlib import Path
 from typing import Iterable
 
 from db.mongodb import get_db
+
+# qdrant_client.models is imported lazily inside the store methods below, and
+# some of those run on the event loop. Its first import builds hundreds of
+# pydantic models - seconds on Linux, over a minute on a slow Windows disk -
+# and on the loop that froze every live meeting. Importing it here moves the
+# cost to start-up; the later local imports are then dictionary lookups.
+try:
+    import qdrant_client.models  # noqa: F401
+except ImportError:  # semantic search / Qdrant not installed
+    pass
 
 # ── configuration (module-local env reads, so core/config stays untouched) ──
 MAX_BYTES = int(os.getenv("BRIEFING_MAX_BYTES", str(10 * 1024 * 1024)))
@@ -513,8 +524,16 @@ class _QdrantStore:
     def __init__(self) -> None:
         self._client = None
         self._ready = False
+        self._connect_lock = threading.Lock()
 
     def _connect(self):
+        # Store calls run on executor threads, so two first requests can race
+        # here; without the lock both see a missing collection, both create
+        # it, and the loser fails with 409 "already exists".
+        with self._connect_lock:
+            return self._connect_locked()
+
+    def _connect_locked(self):
         if self._client is None:
             from qdrant_client import QdrantClient
             from core.config import settings
@@ -531,7 +550,13 @@ class _QdrantStore:
                 (FILES_COLLECTION, ("doc_id",)),
             ):
                 if name not in existing:
-                    self._client.create_collection(name, vectors_config={}, on_disk_payload=True)
+                    try:
+                        self._client.create_collection(name, vectors_config={}, on_disk_payload=True)
+                    except Exception as exc:
+                        # Another process (a second worker, a deploy overlap)
+                        # created it first - that is the outcome we wanted.
+                        if "already exists" not in str(exc):
+                            raise
                 # Qdrant Cloud's strict mode refuses unindexed filters.
                 for f in fields:
                     self._client.create_payload_index(name, f, PayloadSchemaType.KEYWORD)
@@ -718,10 +743,16 @@ class DocumentService:
         client = svc._client
         existing = {c.name for c in client.get_collections().collections}
         if COLLECTION not in existing:
-            client.create_collection(
-                collection_name=COLLECTION,
-                vectors_config=VectorParams(size=svc._dim, distance=Distance.COSINE),
-            )
+            try:
+                client.create_collection(
+                    collection_name=COLLECTION,
+                    vectors_config=VectorParams(size=svc._dim, distance=Distance.COSINE),
+                )
+            except Exception as exc:
+                # Remote mode runs vector calls concurrently, so a parallel
+                # first request may have created it a moment ago.
+                if "already exists" not in str(exc):
+                    raise
         if self._store.remote:
             # Strict mode (Qdrant Cloud) rejects filters on unindexed fields.
             for f in ("meeting_id", "owner", "doc_id"):

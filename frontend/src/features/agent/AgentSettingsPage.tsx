@@ -8,6 +8,7 @@ import { errorMessage } from '../../lib/api'
 import { useAuthStore, useToastStore } from '../../store'
 import { usePageTitle } from '../../components/common/usePageTitle'
 import { agentApi } from './api'
+import { NativeLanguageCard } from '../translation'
 import { CONTACT_FIELDS } from './types'
 import type { AgentCapability, AgentProfile, AgentSnippet, ContactField, PermissionMode } from './types'
 import './agent.css'
@@ -337,6 +338,9 @@ export function AgentSettingsPage() {
                     <span>The language model isn't configured on the server, so the assistant may only understand simple, direct phrasing.</span>
                 </div>
             )}
+
+            {/* ── Your language (live translation) ─────────────────── */}
+            <NativeLanguageCard />
 
             {/* ── Contact card ─────────────────────────────────────── */}
             <div className="section-title"><span>Your contact card</span></div>

@@ -41,6 +41,7 @@ from typing import Callable, List, Optional
 import httpx
 
 from core.config import settings
+from core.http import async_client
 
 
 class LLMUnavailable(RuntimeError):
@@ -196,6 +197,25 @@ class LLMClient:
 
     def __init__(self) -> None:
         self._providers = _build_providers()
+        self._http: tuple[asyncio.AbstractEventLoop, httpx.AsyncClient] | None = None
+
+    def _client(self) -> httpx.AsyncClient:
+        """
+        One pooled client per event loop.
+
+        A fresh AsyncClient per call pays a new TLS handshake to every
+        provider, measured at several seconds to Google from a cold
+        connection - longer than the head start a live call gets. Reusing
+        connections keeps that cost to once per process. Tied to the loop that
+        created it because tests run several loops.
+        """
+        loop = asyncio.get_running_loop()
+        if self._http is None or self._http[0] is not loop or self._http[1].is_closed:
+            self._http = (loop, async_client(
+                timeout=90.0,
+                limits=httpx.Limits(max_connections=32, max_keepalive_connections=16, keepalive_expiry=120),
+            ))
+        return self._http[1]
 
     # ── capability ────────────────────────────────────────────────────────────
     @property
@@ -237,7 +257,7 @@ class LLMClient:
     # ── one provider ──────────────────────────────────────────────────────────
     async def _ask_provider(
         self, provider: Provider, client: httpx.AsyncClient, payload_base: dict,
-        fast: bool, attempts: List[str],
+        fast: bool, attempts: List[str], timeout: float = 90.0,
     ) -> str:
         """Walk one provider's models; return content or raise LLMUnavailable."""
         for model in provider.chain(fast):
@@ -247,7 +267,7 @@ class LLMClient:
             label = f"{provider.name}/{model}"
             try:
                 response = await client.post(
-                    provider.endpoint, headers=provider.headers(), json=payload
+                    provider.endpoint, headers=provider.headers(), json=payload, timeout=timeout,
                 )
             except Exception as exc:  # network-level failure
                 attempts.append(f"{label}: {type(exc).__name__}")
@@ -326,37 +346,37 @@ class LLMClient:
         deadline = loop.time() + timeout
         running: set[asyncio.Task] = set()
 
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            def launch() -> None:
-                provider = queue.pop(0)
-                running.add(asyncio.create_task(
-                    self._ask_provider(provider, client, payload_base, fast, attempts)
-                ))
+        client = self._client()
+        def launch() -> None:
+            provider = queue.pop(0)
+            running.add(asyncio.create_task(
+                self._ask_provider(provider, client, payload_base, fast, attempts, timeout)
+            ))
 
-            launch()
-            try:
-                while running:
-                    remaining = deadline - loop.time()
-                    if remaining <= 0:
-                        attempts.append(f"timed out after {timeout:.0f}s")
-                        break
-                    wait = min(remaining, hedge) if queue else remaining
-                    done, _ = await asyncio.wait(
-                        running, timeout=wait, return_when=asyncio.FIRST_COMPLETED
-                    )
-                    for task in done:
-                        running.discard(task)
-                        if task.exception() is None:
-                            return task.result()
-                    # Start the next provider when one failed, or when the
-                    # leaders have used up their head start.
-                    if queue and (done or not running or wait == hedge):
-                        launch()
-            finally:
-                for task in running:
-                    task.cancel()
-                if running:
-                    await asyncio.gather(*running, return_exceptions=True)
+        launch()
+        try:
+            while running:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    attempts.append(f"timed out after {timeout:.0f}s")
+                    break
+                wait = min(remaining, hedge) if queue else remaining
+                done, _ = await asyncio.wait(
+                    running, timeout=wait, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    running.discard(task)
+                    if task.exception() is None:
+                        return task.result()
+                # Start the next provider when one failed, or when the
+                # leaders have used up their head start.
+                if queue and (done or not running or wait == hedge):
+                    launch()
+        finally:
+            for task in running:
+                task.cancel()
+            if running:
+                await asyncio.gather(*running, return_exceptions=True)
 
         raise LLMUnavailable(
             "Every configured model declined the request. Tried - "
@@ -395,7 +415,7 @@ class LLMClient:
             attempts: List[str] = []
             one = Provider(**{**provider.__dict__, "models": provider.models[:1], "fast_models": []})
             try:
-                async with httpx.AsyncClient(timeout=20) as client:
+                async with async_client(timeout=20) as client:
                     await self._ask_provider(
                         one, client,
                         {"messages": [{"role": "user", "content": "Reply with: ok"}], "max_tokens": 16},

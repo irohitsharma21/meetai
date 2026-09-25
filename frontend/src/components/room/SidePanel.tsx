@@ -6,6 +6,7 @@ import { AssistantDock } from '../meeting/AssistantDock'
 import { ChatPanel, ParticipantsPanel } from './panels'
 import { BriefingPanel } from '../../features/briefing'
 import { AgentPanel } from '../../features/agent'
+import { TranslationPanel } from '../../features/translation'
 
 export interface SidePanelProps {
     meetingId: string
@@ -94,6 +95,11 @@ export function SidePanel({
                         {panel === 'agent' && (
                             <div className="room-panel-col">
                                 <AgentPanel meetingId={meetingId} onClose={onClose} />
+                            </div>
+                        )}
+                        {panel === 'translation' && (
+                            <div className="room-panel-col">
+                                <TranslationPanel meetingId={meetingId} onClose={onClose} />
                             </div>
                         )}
                         {panel === 'assistant' && (

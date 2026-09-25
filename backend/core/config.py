@@ -212,6 +212,34 @@ class Settings(BaseSettings):
             }.get(self.TTS_PROVIDER)
         )
 
+    # ── Live translation (optional) ───────────────────────────────────────────
+    # Multilingual speech for translated lines. The TTS_PROVIDER voices above
+    # are English-first; Gemini's TTS models speak Tamil, Hindi and the rest of
+    # the language table from the same key the LLM chain already uses. Tried in
+    # order, because the free tier answers 429/503 per model. Without
+    # GEMINI_API_KEY the client speaks translations with the browser's own
+    # voices instead.
+    GEMINI_TTS_MODELS: List[str] = ["gemini-3.8-flash-tts", "gemini-3.8-flash-lite-tts"]
+    GEMINI_TTS_VOICE: str = "Kore"
+    # Budgets for one translated line. A translation that arrives after the
+    # speaker has moved on two sentences is noise, so these are deliberately
+    # short; a line that misses them is dropped rather than delivered late.
+    TRANSLATION_TIMEOUT_S: float = 8.0
+    # Translation races these Gemini models on the native endpoint, one more
+    # every TRANSLATION_HEDGE_S, with the shared LLM chain joining last.
+    # Measured: native flash-lite answers a one-line translation in ~1 s, but
+    # one request in five stalls for 15 s+; the shared chain (OpenAI-compat
+    # endpoint, one Gemini request) took 6-25 s for the same lines.
+    TRANSLATION_GEMINI_MODELS: List[str] = ["gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
+    TRANSLATION_HEDGE_S: float = 1.5
+    TRANSLATION_TTS_TIMEOUT_S: float = 15.0
+    TRANSLATION_MAX_CONCURRENT: int = 4
+    TRANSLATION_TTS_MAX_CONCURRENT: int = 3
+
+    @property
+    def multilingual_tts_configured(self) -> bool:
+        return bool(self.GEMINI_API_KEY and self.GEMINI_TTS_MODELS)
+
     # ── Storage / Encryption ──────────────────────────────────────────────────
     ENCRYPTION_KEY: str = Field(
         "", description="32-byte AES-256 key (base64-encoded) for at-rest encryption"

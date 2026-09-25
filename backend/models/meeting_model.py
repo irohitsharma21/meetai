@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field, field_validator
 import secrets
 import uuid
 
+from core.languages import DEFAULT_LANGUAGE, LANGUAGES, normalise
+
 
 # ── Join codes ────────────────────────────────────────────────────────────────
 # Ambiguous glyphs are excluded so a code read aloud or copied from a screen
@@ -79,6 +81,10 @@ class TranscriptEntry(BaseModel):
     time: str = "00:00:00"
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     timestamp_ms: Optional[int] = None  # milliseconds from meeting start
+    # App language code ("ta") the line was transcribed in. Translation needs
+    # it to know the source language without guessing from the script, and it
+    # is None on lines written before per-speaker languages existed.
+    language: Optional[str] = None
 
 
 class NextAction(BaseModel):
@@ -276,6 +282,16 @@ class UserCreate(BaseModel):
     password: str = Field(..., min_length=8)
     display_name: Optional[str] = None
     role: str = "participant"  # host | participant
+    # The language this person speaks and wants to hear. Optional so existing
+    # clients keep registering unchanged; an unknown code is not worth failing
+    # a sign-up over, so it quietly becomes English and can be fixed later
+    # through PUT /auth/me/language.
+    native_language: Optional[str] = None
+
+    @field_validator("native_language")
+    @classmethod
+    def _norm_language(cls, v: Optional[str]) -> str:
+        return normalise(v) or DEFAULT_LANGUAGE
 
 
 class UserLogin(BaseModel):
@@ -289,6 +305,26 @@ class UserResponse(BaseModel):
     display_name: Optional[str]
     role: str
     created_at: datetime
+    # Accounts created before languages existed have no field; they read as
+    # English, which is what they have been transcribed in all along.
+    native_language: str = DEFAULT_LANGUAGE
+
+
+class UpdateLanguageRequest(BaseModel):
+    """Body of PUT /auth/me/language. Unlike registration, a code nobody
+    recognises is rejected (422): the user is explicitly choosing, and a
+    silent fallback to English would look like the choice was ignored."""
+    native_language: str
+
+    @field_validator("native_language")
+    @classmethod
+    def _known_language(cls, v: str) -> str:
+        code = normalise(v, default=None)
+        if code is None:
+            raise ValueError(
+                f"Unknown language {v!r}. Use one of: {', '.join(sorted(LANGUAGES))}."
+            )
+        return code
 
 
 class TokenResponse(BaseModel):

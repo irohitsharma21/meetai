@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
     Video, Eye, EyeOff, Lock, User, Mail, AlertCircle, ChevronDown,
@@ -7,6 +7,7 @@ import {
 import { authApi } from '../../lib/api'
 import { useAuthStore, useToastStore } from '../../store'
 import { usePageTitle } from '../../components/common/usePageTitle'
+import { LanguageSelect, guessBrowserLanguage, useLanguages } from '../../features/translation'
 
 /**
  * Split-screen auth layout: brand panel on the left, form card on the right.
@@ -221,8 +222,18 @@ const USERNAME_RE = /^[a-zA-Z0-9_-]+$/
 
 export function RegisterPage() {
     const [form, setForm] = useState({
-        username: '', email: '', password: '', display_name: '', role: 'host'
+        username: '', email: '', password: '', display_name: '', role: 'host',
+        native_language: guessBrowserLanguage(),
     })
+    const { languages } = useLanguages()
+    // Once the catalogue arrives, snap the browser guess to a supported code
+    // (unless the user has already picked one).
+    const [langTouched, setLangTouched] = useState(false)
+    useEffect(() => {
+        if (langTouched || languages.length === 0) return
+        const guess = guessBrowserLanguage(languages)
+        setForm((f) => (f.native_language === guess ? f : { ...f, native_language: guess }))
+    }, [languages, langTouched])
     const [showPassword, setShowPassword] = useState(false)
     const [isLoading, setIsLoading] = useState(false)
     const [touched, setTouched] = useState<Partial<Record<keyof typeof form, boolean>>>({})
@@ -383,6 +394,23 @@ export function RegisterPage() {
                                 {passwordStrength === 0 ? 'Use 8 or more characters' : passwordStrength === 1 ? 'Too short' : passwordStrength === 2 ? 'Good' : 'Strong'}
                             </span>
                         )}
+                </div>
+
+                <div className="form-group">
+                    <label className="label" htmlFor="reg-language">Your language</label>
+                    <LanguageSelect
+                        id="reg-language"
+                        value={form.native_language}
+                        onChange={(c) => {
+                            if (!c) return
+                            setLangTouched(true)
+                            setForm((f) => ({ ...f, native_language: c }))
+                        }}
+                        ariaLabel="Your language"
+                    />
+                    <span className="field-hint">
+                        What you speak in meetings. Others who speak something else can hear you translated.
+                    </span>
                 </div>
 
                 <div className="form-group">

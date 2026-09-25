@@ -105,9 +105,13 @@ export const authApi = {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         })
     },
-    register: (data: { username: string; email: string; password: string; display_name?: string; role?: string }) =>
-        api.post('/auth/register', data),
+    register: (data: {
+        username: string; email: string; password: string; display_name?: string; role?: string
+        native_language?: string
+    }) => api.post('/auth/register', data),
     me: () => api.get('/auth/me'),
+    /** Change the language the user speaks natively; returns the updated user. */
+    updateLanguage: (native_language: string) => api.put('/auth/me/language', { native_language }),
     refresh: (token: string) => api.post('/auth/refresh', null, { params: { refresh_token: token } }),
 }
 

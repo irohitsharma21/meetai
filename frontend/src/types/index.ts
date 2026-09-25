@@ -181,6 +181,8 @@ export interface User {
     display_name?: string
     role: Role
     created_at: string
+    /** Language code picked at sign-up (default "en"); drives live translation. */
+    native_language?: string
 }
 
 export interface AuthTokens {

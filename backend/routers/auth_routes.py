@@ -4,6 +4,7 @@ Auth routes:
   POST /auth/login     – login (OAuth2 password form)
   POST /auth/refresh   – refresh access token
   GET  /auth/me        – get current user profile
+  PUT  /auth/me/language – set the caller's native language
 """
 
 from datetime import datetime, timezone
@@ -21,9 +22,33 @@ from core.security import (
 )
 from core.config import settings
 from db.mongodb import get_users_collection
-from models.meeting_model import TokenResponse, UserCreate, UserResponse
+from core.languages import DEFAULT_LANGUAGE, normalise
+from models.meeting_model import (
+    TokenResponse,
+    UpdateLanguageRequest,
+    UserCreate,
+    UserResponse,
+)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _user_response(user: dict) -> UserResponse:
+    """
+    One place that turns a users document into the public profile.
+
+    Documents written before a field existed simply lack it, so every optional
+    field is read with the same default the model declares; a stored language
+    code that has since left the table reads as English rather than a 500.
+    """
+    return UserResponse(
+        username=user["username"],
+        email=user["email"],
+        display_name=user.get("display_name"),
+        role=user.get("role", "participant"),
+        created_at=user["created_at"],
+        native_language=normalise(user.get("native_language")) or DEFAULT_LANGUAGE,
+    )
 
 
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
@@ -40,18 +65,15 @@ async def register(payload: UserCreate):
         "display_name": payload.display_name or payload.username,
         "hashed_password": hash_password(payload.password),
         "role": payload.role,
+        "native_language": payload.native_language or DEFAULT_LANGUAGE,
         "created_at": datetime.now(timezone.utc),
         "is_active": True,
     }
     await col.insert_one(user_doc)
 
-    return UserResponse(
-        username=payload.username,
-        email=payload.email,
-        display_name=payload.display_name,
-        role=payload.role,
-        created_at=user_doc["created_at"],
-    )
+    # display_name as sent (possibly None), not the username fallback that was
+    # stored - the response has always echoed the request here.
+    return _user_response({**user_doc, "display_name": payload.display_name})
 
 
 @router.post("/login", response_model=TokenResponse)
@@ -104,10 +126,40 @@ async def get_me(current_user: dict = Depends(get_current_user)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    return UserResponse(
-        username=user["username"],
-        email=user["email"],
-        display_name=user.get("display_name"),
-        role=user.get("role", "participant"),
-        created_at=user["created_at"],
+    return _user_response(user)
+
+
+@router.put("/me/language", response_model=UserResponse)
+async def set_my_language(
+    payload: UpdateLanguageRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Change the caller's native language.
+
+    This is the account-level default: the language their speech is decoded in
+    and translations are delivered in. A meeting can still override what they
+    are *speaking* for the moment ("I'm speaking: English"); that override is
+    per meeting and lives with the translation service, not here. Streams that
+    are already open keep their language until the speaker rejoins or changes
+    it in the room, so a profile edit never cuts someone off mid-sentence.
+    """
+    col = get_users_collection()
+    # update_one + find_one rather than find_one_and_update: the SQLite
+    # backend implements the common collection surface, not every Mongo call.
+    await col.update_one(
+        {"username": current_user["username"]},
+        {"$set": {"native_language": payload.native_language}},
     )
+    user = await col.find_one({"username": current_user["username"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Translation caches each user's native language; without this the new
+    # choice would take up to its refresh interval to reach live meetings.
+    try:
+        from services.translation_service import translation_service
+        translation_service.forget_user(current_user["username"])
+    except Exception as exc:
+        print(f"[translation] cache refresh for {current_user['username']} skipped: {exc}")
+    return _user_response(user)
